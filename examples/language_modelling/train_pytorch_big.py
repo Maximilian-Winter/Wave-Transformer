@@ -194,7 +194,7 @@ def train_language_model():
     ]
     train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
     eval_dataset = BoundedStreamingDataset("HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
-                                           max_entries=10000, skip_first=2_500_000, device=device)
+                                           max_entries=5000, skip_first=2_500_000, device=device)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=2, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, num_workers=2, drop_last=False)
 

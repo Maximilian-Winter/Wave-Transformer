@@ -67,19 +67,19 @@ def example_multi_dataset_preparation():
             "name": "wikimedia/wikipedia",
             "subset": "20231101.en",
             "skip": 0,
-            "max_entries": 1_500_000,
+            "max_entries": 1500000,
             "weight": 0.3,  # 30% of final dataset
         },
         {
             "name": "roneneldan/TinyStories",
             "skip": 0,
-            "max_entries": 1_000_000,
+            "max_entries": 1000000,
             "weight": 0.2,  # 40% of final dataset
         },
         {
             "name": "HuggingFaceFW/fineweb",
             "skip": 0,
-            "max_entries": 2_500_000,
+            "max_entries": 2500000,
             "weight": 0.5,  # 30% of final dataset
         },
     ]

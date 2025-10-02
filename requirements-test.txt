@@ -1,0 +1,11 @@
+# Testing dependencies for WaveTransformer
+pytest>=7.0.0
+pytest-cov>=4.0.0
+torch>=2.0.0
+numpy>=1.20.0
+matplotlib>=3.5.0
+flash-attn>=2.0.0
+
+# Optional: for better test output
+pytest-xdist>=3.0.0  # parallel test execution
+pytest-timeout>=2.1.0  # test timeouts

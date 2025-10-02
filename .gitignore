@@ -7,3 +7,4 @@
 /src/WaveTransformer.egg-info
 /examples/language_modelling/prepared_datasets
 /examples/sst_tts/VCTK-Corpus-0.92
+/src/wave_transformer/audio/__pycache__

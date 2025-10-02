@@ -1,222 +1,169 @@
 """
-Example script showing how to prepare and save datasets for faster training.
-
-This demonstrates:
-1. Preparing and saving a single streaming dataset
-2. Preparing and saving multiple datasets with weighted sampling
-3. Loading prepared datasets for training
+Example usage of the prepare and load methods for BoundedStreamingDataset
+and MultiBoundedStreamingDataset.
 """
 
 import torch
 from tokenizers import Tokenizer
-from torch.utils.data import DataLoader
+from wave_transformer.language_modelling.text_datasets import BoundedStreamingDataset, MultiBoundedStreamingDataset
 
 
-from wave_transformer.language_modelling.text_datasets import (
-    prepare_and_save_dataset,
-    prepare_and_save_multi_dataset,
-    PreparedDataset,
-    BoundedStreamingDataset,
-)
+# Example 1: BoundedStreamingDataset
+def example_bounded_dataset():
+    """Example of preparing and loading a single bounded dataset."""
 
+    # Initialize tokenizer (replace with your tokenizer)
+    tokenizer = Tokenizer.from_pretrained("bert-base-uncased")
+    pad_token_id = tokenizer.token_to_id("[PAD]")
 
-def example_single_dataset_preparation():
-    """Example: Prepare and save a single dataset"""
-    
-    # Load tokenizer
-    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
-    tokenizer = Tokenizer.from_pretrained(model_name)
-    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
-    
-    # Prepare and save dataset
-    save_path = prepare_and_save_dataset(
-        data_source="roneneldan/TinyStories",
+    # Create dataset
+    dataset = BoundedStreamingDataset(
+        data_source="wikitext",  # HuggingFace dataset name
         tokenizer=tokenizer,
         pad_token_id=pad_token_id,
-        save_path="prepared_datasets/tiny_stories.pkl",
         sequence_length=512,
-        stride=512,  # No overlap
-        max_entries=10000,  # Only process first 10k examples
+        stride=512,
+        text_column="text",
+        max_entries=10000,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
-    
-    print(f"\nDataset saved to: {save_path}")
-    
+
+    # Prepare (tokenize and save) - use 8 workers for parallel processing
+    print("Preparing dataset...")
+    dataset.prepare(
+        output_path="prepared_wikitext.json",
+        num_workers=8,
+        chunk_size=1000
+    )
+
     # Load the prepared dataset
-    dataset = PreparedDataset(save_path, device=torch.device("cuda"))
-    loader = DataLoader(dataset, batch_size=16, shuffle=True)
-    
-    # Use in training
-    for batch in loader:
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        print(f"Batch shape: {input_ids.shape}")
-        break  # Just show first batch
+    print("\nLoading prepared dataset...")
+    loaded_dataset = BoundedStreamingDataset.load(
+        input_path="prepared_wikitext.json",
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=512,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+
+    # Use the loaded dataset
+    print("\nIterating over loaded dataset...")
+    for i, batch in enumerate(loaded_dataset):
+        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}")
+        if i >= 2:  # Just show first 3 batches
+            break
 
 
-def example_multi_dataset_preparation():
-    """Example: Prepare and save multiple datasets with weighted sampling"""
-    
-    # Load tokenizer
-    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
-    tokenizer = Tokenizer.from_pretrained(model_name)
-    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
-    
-    # Define dataset specifications
+# Example 2: MultiBoundedStreamingDataset
+def example_multi_bounded_dataset():
+    """Example of preparing and loading multiple datasets with weighted sampling."""
+
+    # Initialize tokenizer
+    tokenizer = Tokenizer.from_pretrained("bert-base-uncased")
+    pad_token_id = tokenizer.token_to_id("[PAD]")
+
+    # Define multiple datasets with weights
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
+        {
+            "name": "wikitext",
+            "subset": "wikitext-2-raw-v1",
+            "max_entries": 5000,
+            "skip": 0,
+            "weight": 2.0  # Sample this dataset twice as often
+        },
+        {
+            "name": "bookcorpus",
+            "max_entries": 3000,
+            "skip": 100,
+            "weight": 1.0
+        }
     ]
-    
-    # Prepare and save combined dataset
-    save_path = prepare_and_save_multi_dataset(
+
+    # Create multi-dataset
+    multi_dataset = MultiBoundedStreamingDataset(
         dataset_specs=dataset_specs,
         tokenizer=tokenizer,
         pad_token_id=pad_token_id,
-        save_path="prepared_datasets/multi_dataset.pkl",
         sequence_length=512,
-        global_max_entries=1_000_000,  # Total examples in final dataset
-        seed=42,  # For reproducibility
+        stride=512,
+        text_column="text",
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        global_max_entries=8000,
+        seed=42
     )
 
-    dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 400_000, "max_entries": 4_000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 100_000, "max_entries": 1_000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 500_000, "max_entries": 5_000, "weight": 0.5},
-    ]
+    # Prepare (tokenize and save) all datasets
+    print("Preparing multiple datasets...")
+    multi_dataset.prepare(
+        output_path="prepared_multi_datasets.json",
+        num_workers=8,
+        chunk_size=1000
+    )
 
-    # Prepare and save combined dataset
-    save_path = prepare_and_save_multi_dataset(
-        dataset_specs=dataset_specs,
+    # Load the prepared datasets
+    print("\nLoading prepared datasets...")
+    loaded_multi_dataset = MultiBoundedStreamingDataset.load(
+        input_path="prepared_multi_datasets.json",
         tokenizer=tokenizer,
         pad_token_id=pad_token_id,
-        save_path="prepared_datasets/multi_eval_dataset.pkl",
+        dataset_specs=dataset_specs,  # Need specs for weights
         sequence_length=512,
-        global_max_entries=10000,  # Total examples in final dataset
-        seed=42,  # For reproducibility
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        global_max_entries=8000,
+        seed=42
     )
-    print(f"\nCombined dataset saved to: {save_path}")
-    
-    # Load the prepared dataset
-    dataset = PreparedDataset(save_path, device=torch.device("cuda"))
-    loader = DataLoader(dataset, batch_size=16, shuffle=True)
-    
-    print(f"Dataset size: {len(dataset)} examples")
+
+    # Use the loaded dataset with weighted sampling
+    print("\nIterating over loaded multi-dataset...")
+    for i, batch in enumerate(loaded_multi_dataset):
+        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}")
+        if i >= 2:  # Just show first 3 batches
+            break
 
 
-def example_streaming_vs_prepared():
-    """Compare streaming vs prepared dataset usage"""
-    
-    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
-    tokenizer = Tokenizer.from_pretrained(model_name)
-    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    print("\n=== Using Streaming Dataset ===")
-    # Streaming dataset - processes on the fly
-    streaming_dataset = BoundedStreamingDataset(
-        data_source="roneneldan/TinyStories",
+# Example 3: Using with PyTorch DataLoader
+def example_with_dataloader():
+    """Example of using prepared dataset with PyTorch DataLoader."""
+    from torch.utils.data import DataLoader
+
+    tokenizer = Tokenizer.from_pretrained("bert-base-uncased")
+    pad_token_id = tokenizer.token_to_id("[PAD]")
+
+    # Load prepared dataset
+    dataset = BoundedStreamingDataset.load(
+        input_path="prepared_wikitext.json",
         tokenizer=tokenizer,
         pad_token_id=pad_token_id,
         sequence_length=512,
-        max_entries=1000,
-        device=device,
+        device=torch.device("cpu")  # DataLoader will handle device transfer
     )
-    
-    # Can't shuffle streaming datasets easily
-    streaming_loader = DataLoader(streaming_dataset, batch_size=16)
-    
-    print("\n=== Using Prepared Dataset ===")
-    # Prepared dataset - loaded from disk (much faster)
-    prepared_path = "prepared_datasets/tiny_stories.pkl"
-    
-    # Check if it exists, if not create it
-    from pathlib import Path
-    if not Path(prepared_path).exists():
-        print("Preparing dataset (first time only)...")
-        prepare_and_save_dataset(
-            data_source="roneneldan/TinyStories",
-            tokenizer=tokenizer,
-            pad_token_id=pad_token_id,
-            save_path=prepared_path,
-            sequence_length=512,
-            max_entries=1000,
-        )
-    
-    prepared_dataset = PreparedDataset(prepared_path, device=device)
-    
-    # Can shuffle, much faster iteration
-    prepared_loader = DataLoader(prepared_dataset, batch_size=16, shuffle=True)
-    
-    print(f"\nPrepared dataset: {len(prepared_dataset)} examples")
-    print("Benefits:")
-    print("  ✓ Much faster iteration (no tokenization overhead)")
-    print("  ✓ Can shuffle for better training")
-    print("  ✓ Deterministic (same dataset every run)")
-    print("  ✓ Easy to share/distribute")
 
+    # Create DataLoader for batching
+    dataloader = DataLoader(
+        dataset,
+        batch_size=32,
+        num_workers=0  # IterableDataset doesn't support multi-process loading
+    )
 
-def example_training_integration():
-    """Example of integrating prepared datasets into training"""
-    
-    from torch import optim, nn
-    
-    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
-    tokenizer = Tokenizer.from_pretrained(model_name)
-    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Option 1: Prepare datasets once, then use them for multiple training runs
-    print("Preparing training dataset...")
-    train_path = prepare_and_save_dataset(
-        data_source="roneneldan/TinyStories",
-        tokenizer=tokenizer,
-        pad_token_id=pad_token_id,
-        save_path="prepared_datasets/train.pkl",
-        sequence_length=512,
-        max_entries=5000,
-        skip_first=0,
-    )
-    
-    print("\nPreparing eval dataset...")
-    eval_path = prepare_and_save_dataset(
-        data_source="roneneldan/TinyStories",
-        tokenizer=tokenizer,
-        pad_token_id=pad_token_id,
-        save_path="prepared_datasets/eval.pkl",
-        sequence_length=512,
-        max_entries=500,
-        skip_first=5000,  # Skip the training examples
-    )
-    
-    # Load for training
-    train_dataset = PreparedDataset(train_path, device=device)
-    eval_dataset = PreparedDataset(eval_path, device=device)
-    
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, drop_last=True)
-    eval_loader = DataLoader(eval_dataset, batch_size=16)
-    
-    print(f"\nTraining: {len(train_dataset)} examples")
-    print(f"Eval: {len(eval_dataset)} examples")
-    print("\nNow you can train multiple times without re-processing!")
+    print("Using DataLoader...")
+    for i, batch in enumerate(dataloader):
+        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}")
+        if i >= 2:
+            break
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Dataset Preparation Examples")
-    print("=" * 60)
-    
-    # Choose which example to run
-    print("\n1. Single dataset preparation")
-    # example_single_dataset_preparation()
-    
-    print("\n2. Multi-dataset preparation")
-    example_multi_dataset_preparation()
-    
-    print("\n3. Streaming vs Prepared comparison")
-    # example_streaming_vs_prepared()
-    
-    print("\n4. Training integration")
-    # example_training_integration()
-    
-    print("\nUncomment the examples you want to run!")
+    print("=" * 50)
+    print("Example 1: Single Bounded Dataset")
+    print("=" * 50)
+    example_bounded_dataset()
+
+    print("\n" + "=" * 50)
+    print("Example 2: Multi Bounded Dataset")
+    print("=" * 50)
+    #example_multi_bounded_dataset()
+
+    print("\n" + "=" * 50)
+    print("Example 3: With DataLoader")
+    print("=" * 50)
+    #example_with_dataloader()

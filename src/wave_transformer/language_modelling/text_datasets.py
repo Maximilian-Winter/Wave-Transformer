@@ -299,21 +299,22 @@ class BoundedStreamingDataset(IterableDataset):
                 }
 
     @staticmethod
-    def _process_chunk(args):
-        """Helper for parallel processing."""
-        texts, tokenizer_path, pad_token_id, sequence_length, stride, text_column = args
+    def _process_entries(args):
+        """Worker function: load tokenizer, process entries, return tokenized samples."""
+        tokenizer_path, pad_token_id, sequence_length, stride, text_column, entries = args
 
         tokenizer = Tokenizer.from_file(tokenizer_path)
         results = []
         buffer = []
 
-        for text in texts:
+        for entry in entries:
+            text = entry.get(text_column) if isinstance(entry, dict) else entry
+
             if not isinstance(text, str) or not text.strip():
                 continue
 
             try:
-                encoding = tokenizer.encode(text, add_special_tokens=False)
-                tokens = encoding.ids
+                tokens = tokenizer.encode(text, add_special_tokens=False).ids
             except Exception:
                 continue
 
@@ -350,16 +351,14 @@ class BoundedStreamingDataset(IterableDataset):
     def prepare(
             self,
             output_path: Union[str, Path],
-            num_workers: Optional[int] = None,
-            chunk_size: int = 1000
+            num_workers: Optional[int] = None
     ):
         """
-        Tokenize and save the entire dataset to a JSON file.
+        Tokenize and save the entire dataset to a JSON file using parallel workers.
 
         Args:
             output_path: Path to save the prepared dataset
-            num_workers: Number of parallel workers (None = cpu_count())
-            chunk_size: Number of texts to process per chunk
+            num_workers: Number of parallel workers (None = cpu_count(), 1 = no parallelization)
         """
         if self.preloaded_data is not None:
             raise ValueError("Cannot prepare an already loaded dataset")
@@ -367,62 +366,49 @@ class BoundedStreamingDataset(IterableDataset):
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Save tokenizer to temp location for parallel workers
         tokenizer_path = output_path.parent / f"{output_path.stem}_tokenizer.json"
         self.tokenizer.save(str(tokenizer_path))
-
-        all_data = []
 
         try:
             text_iterator = (sample[self.text_column] for sample in self.dataset)
         except KeyError:
             raise KeyError(f"Text column '{self.text_column}' not found in dataset")
 
-        # Collect texts into chunks
-        text_chunks = []
-        current_chunk = []
-        total_texts = 0
-
-        print("Collecting texts...")
+        # Collect all entries
+        print("Collecting entries...")
+        entries = []
         for text in tqdm(text_iterator):
-            if self.max_entries and total_texts >= self.max_entries:
+            if self.max_entries and len(entries) >= self.max_entries:
                 break
-
             if isinstance(text, str) and text.strip():
-                current_chunk.append(text)
-                total_texts += 1
+                entries.append(text)
 
-                if len(current_chunk) >= chunk_size:
-                    text_chunks.append(current_chunk)
-                    current_chunk = []
+        print(f"Processing {len(entries)} entries with {num_workers or cpu_count()} workers...")
 
-        if current_chunk:
-            text_chunks.append(current_chunk)
-
-        print(f"Processing {total_texts} texts in {len(text_chunks)} chunks...")
-
-        if num_workers is None or num_workers > 1:
+        if num_workers == 1:
+            # Single-threaded processing
+            args = (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                    self.stride, self.text_column, entries)
+            all_data = self._process_entries(args)
+        else:
+            # Parallel processing
             workers = num_workers or cpu_count()
+            chunk_size = len(entries) // workers + 1
+            chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
+
             args = [
-                (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                 self.stride, self.text_column)
-                for chunk in text_chunks
+                (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                 self.stride, self.text_column, chunk)
+                for chunk in chunks
             ]
 
+            all_data = []
             with Pool(workers) as pool:
-                for chunk_results in tqdm(pool.imap(self._process_chunk, args), total=len(text_chunks)):
+                for chunk_results in tqdm(pool.imap(self._process_entries, args), total=len(chunks)):
                     all_data.extend(chunk_results)
-        else:
-            for chunk in tqdm(text_chunks):
-                args = (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                        self.stride, self.text_column)
-                chunk_results = self._process_chunk(args)
-                all_data.extend(chunk_results)
 
-        # Clean up temp tokenizer file
         tokenizer_path.unlink()
 
-        # Apply skip_first if needed
         if self.skip_first > 0:
             all_data = all_data[self.skip_first:]
 
@@ -695,21 +681,22 @@ class MultiBoundedStreamingDataset(IterableDataset):
         return sum(spec["max_entries"] for spec in self.dataset_specs)
 
     @staticmethod
-    def _process_dataset_chunk(args):
-        """Helper for parallel processing of a single dataset."""
-        texts, tokenizer_path, pad_token_id, sequence_length, stride, text_column = args
+    def _process_entries(args):
+        """Worker function: load tokenizer, process entries, return tokenized samples."""
+        tokenizer_path, pad_token_id, sequence_length, stride, text_column, entries = args
 
         tokenizer = Tokenizer.from_file(tokenizer_path)
         results = []
         buffer = []
 
-        for text in texts:
+        for entry in entries:
+            text = entry.get(text_column) if isinstance(entry, dict) else entry
+
             if not isinstance(text, str) or not text.strip():
                 continue
 
             try:
-                encoding = tokenizer.encode(text, add_special_tokens=False)
-                tokens = encoding.ids
+                tokens = tokenizer.encode(text, add_special_tokens=False).ids
             except Exception:
                 continue
 
@@ -746,16 +733,14 @@ class MultiBoundedStreamingDataset(IterableDataset):
     def prepare(
             self,
             output_path: Union[str, Path],
-            num_workers: Optional[int] = None,
-            chunk_size: int = 1000
+            num_workers: Optional[int] = None
     ):
         """
-        Tokenize and save all datasets to a JSON file.
+        Tokenize and save all datasets to a JSON file using parallel workers.
 
         Args:
             output_path: Path to save the prepared datasets
-            num_workers: Number of parallel workers (None = cpu_count())
-            chunk_size: Number of texts to process per chunk
+            num_workers: Number of parallel workers (None = cpu_count(), 1 = no parallelization)
         """
         if self.preloaded_data is not None:
             raise ValueError("Cannot prepare an already loaded dataset")
@@ -789,49 +774,40 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 print(f"Warning: Text column '{self.text_column}' not found in {dataset_name}")
                 continue
 
-            text_chunks = []
-            current_chunk = []
-            total_texts = 0
             max_entries = spec["max_entries"]
             skip_first = spec.get("skip", 0)
 
-            print(f"Collecting texts from {dataset_name}...")
+            print(f"Collecting entries from {dataset_name}...")
+            entries = []
             for text in tqdm(text_iterator):
-                if total_texts >= max_entries + skip_first:
+                if len(entries) >= max_entries + skip_first:
                     break
-
                 if isinstance(text, str) and text.strip():
-                    current_chunk.append(text)
-                    total_texts += 1
+                    entries.append(text)
 
-                    if len(current_chunk) >= chunk_size:
-                        text_chunks.append(current_chunk)
-                        current_chunk = []
+            print(f"Processing {len(entries)} entries with {num_workers or cpu_count()} workers...")
 
-            if current_chunk:
-                text_chunks.append(current_chunk)
-
-            print(f"Processing {total_texts} texts in {len(text_chunks)} chunks...")
-
-            dataset_data = []
-
-            if num_workers is None or num_workers > 1:
+            if num_workers == 1:
+                # Single-threaded processing
+                args = (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                        self.stride, self.text_column, entries)
+                dataset_data = self._process_entries(args)
+            else:
+                # Parallel processing
                 workers = num_workers or cpu_count()
+                chunk_size = len(entries) // workers + 1
+                chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
+
                 args = [
-                    (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                     self.stride, self.text_column)
-                    for chunk in text_chunks
+                    (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                     self.stride, self.text_column, chunk)
+                    for chunk in chunks
                 ]
 
+                dataset_data = []
                 with Pool(workers) as pool:
-                    for chunk_results in tqdm(pool.imap(self._process_dataset_chunk, args), total=len(text_chunks)):
+                    for chunk_results in tqdm(pool.imap(self._process_entries, args), total=len(chunks)):
                         dataset_data.extend(chunk_results)
-            else:
-                for chunk in tqdm(text_chunks):
-                    args = (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                            self.stride, self.text_column)
-                    chunk_results = self._process_dataset_chunk(args)
-                    dataset_data.extend(chunk_results)
 
             if skip_first > 0:
                 dataset_data = dataset_data[skip_first:]

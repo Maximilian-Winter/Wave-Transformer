@@ -1,4 +1,6 @@
 import random
+from time import sleep
+
 import torch
 import pickle
 import json
@@ -784,6 +786,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     break
                 if isinstance(text, str) and text.strip():
                     entries.append(text)
+                sleep(0.005)
 
             print(f"Processing {len(entries)} entries with {num_workers or cpu_count()} workers...")
 

@@ -50,7 +50,7 @@ def prepare_dataset():
     from tokenizers import Tokenizer
     tokenizer = Tokenizer.from_pretrained(model_name)
     pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
-
+    tokenizer.save("SmolLM2-135M-Instruct-Tokenizer.json")
     print("Pad Token ID:", pad_token_id)
     print("Pad Token:", tokenizer.decode([pad_token_id], False))
 
@@ -63,6 +63,14 @@ def prepare_dataset():
     ]
     train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
     train_dataset.prepare("prepared_datasets/train_dataset_prepared.json", 8)
+
+    eval_dataset_specs = [
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 4000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 1000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 5000, "weight": 0.5},
+    ]
+    eval_dataset = MultiBoundedStreamingDataset(eval_dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
+    eval_dataset.prepare("prepared_datasets/eval_dataset_prepared.json", 8)
 
 if __name__ == "__main__":
     random.seed(42)

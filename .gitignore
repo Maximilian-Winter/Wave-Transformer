@@ -1,4 +1,6 @@
 /examples/language_modelling/*.pt
+/examples/language_modelling/*.json
+/examples/language_modelling/*.png
 /src/wave_transformer/language_modelling/__pycache__
 /src/wave_transformer/core/__pycache__
 /src/wave_transformer/__pycache__

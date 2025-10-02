@@ -21,7 +21,7 @@ from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 
 from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, compute_language_modeling_loss, \
     cosine_schedule_with_warmup, camel_to_snake, extract_architecture_details, test_generation, diversity_report, \
-    save_training_chronicle, compute_distillation_loss
+    save_training_chronicle
 
 
 def train_epoch(epoch, model, dataloader, optimizer, scheduler, pad_token_id, accumulation_steps=1):
@@ -164,16 +164,16 @@ def train_language_model(big_training: bool = False):
     num_layers = 16
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 64
+    num_harmonics = 128
 
     # Hyperparameters
-    epochs = 10
-    batch_size = 4
+    epochs = 4
+    batch_size = 32
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
     final_lr = 5e-5
-    warmup_pct = 0.025
+    warmup_pct = 0.1
 
     model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
@@ -210,23 +210,28 @@ def train_language_model(big_training: bool = False):
             random.shuffle(texts)
             random.shuffle(texts)
             factor = int(len(texts) * 0.90)
-            train_corpus = texts[:factor]
-
+            train_corpus = texts * 50
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
             eval_corpus = texts[factor:]
 
-            return train_corpus * 50, eval_corpus
+            return train_corpus, eval_corpus
 
 
         train_corpus, eval_corpus = load_dao_teachings()
         avg_train_length = 0
         max_train_length = -1
+        min_train_length = 10000
         for train_text in train_corpus:
             train_length = len(tokenizer.encode(train_text).ids)
             avg_train_length += train_length
             max_train_length = max(max_train_length, train_length)
+            min_train_length = min(min_train_length, train_length)
 
         avg_train_length = avg_train_length / len(train_corpus)
-        print(f"Train length: {avg_train_length}, Max length: {max_train_length}")
+        print(f"Train length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
         train_dataset = TextDatasetPadded(train_corpus, tokenizer, pad_token_id, seq_len, device=device)
         eval_dataset = TextDatasetPadded(eval_corpus, tokenizer, pad_token_id, seq_len, device=device)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
@@ -348,7 +353,6 @@ def train_language_model(big_training: bool = False):
         }, f"wave_transformer_epoch_{epoch + 1}.pt")
         print(f"  Checkpoint: {checkpoint_path}")
         #
-        #model.return_pathway.visualize_activations(device=device)
         # Compute metrics
 
         # Record epoch

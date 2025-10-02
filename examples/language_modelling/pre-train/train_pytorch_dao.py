@@ -18,14 +18,15 @@ from wave_transformer.core.transformer import WaveTransformer
 
 from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset, TextDatasetPadded
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoderSimple
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 
-from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, compute_language_modeling_loss, \
+from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, \
+    compute_language_modeling_loss, \
     cosine_schedule_with_warmup, camel_to_snake, extract_architecture_details, test_generation, diversity_report, \
-    save_training_chronicle
+    save_training_chronicle, save_model_bundle
 
 
-def train_epoch(epoch, model, dataloader, optimizer, scheduler, pad_token_id, accumulation_steps=1):
+def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, accumulation_steps=1):
     model.train()
     epoch_losses = []
 
@@ -56,13 +57,14 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, pad_token_id, ac
         epoch_losses.append(loss_value)
         accumulated_loss += loss_value
         if (batch_idx + 1) % 10000 == 0:
-            torch.save({
-                'epoch': batch_idx + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-            }, f"wave_transformer_batch_{batch_idx + 1}.pt")
-
+            save_model_bundle(
+                model,
+                result_dir,
+                f"wave_transformer_batch_{batch_idx + 1}",
+                epoch=epoch + 1,
+                optimizer=optimizer,
+                scheduler=scheduler
+            )
         # step only after we have accumulated grads
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -229,12 +231,12 @@ def train_language_model():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, drop_last=False)
 
-    wave_encoder = TokenToWaveEncoderSimple(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=2, d_model=d_model)
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model)
 
     wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model, hidden_mult=2.0, num_heads=8, num_layers=3,
                                  low_rank_output=512)
     # Model
-    model = WaveTransformer(
+    wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,
         wave_decoder=wave_decoder,
         num_harmonics=num_harmonics,
@@ -245,10 +247,10 @@ def train_language_model():
         dropout=dropout
     ).to(device, dtype=torch.bfloat16)
 
-    print("Model:\n", model)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print("Model:\n", wave_transformer_model)
+    print(f"Model parameters: {sum(p.numel() for p in wave_transformer_model.parameters()):,}")
 
-    optimizer = optim.AdamW(model.parameters(),
+    optimizer = optim.AdamW(wave_transformer_model.parameters(),
         lr=base_lr,            # 5e-4
         betas=(0.9, 0.95),     # GPT-3/Qwen style (instead of 0.999)
         eps=1e-8,
@@ -273,9 +275,9 @@ def train_language_model():
     # Create chronicle
     timestamp = datetime.now().isoformat()
     chronicle = {
-        'experiment_name': f"{camel_to_snake(model.__class__.__name__)}_experiment",
+        'experiment_name': f"{camel_to_snake(wave_transformer_model.__class__.__name__)}_experiment",
         'timestamp': timestamp,
-        'architecture': extract_architecture_details(model),
+        'architecture': extract_architecture_details(wave_transformer_model),
         'hyperparameters': {
             'epochs': epochs,
             'batch_size': batch_size,
@@ -304,16 +306,16 @@ def train_language_model():
     # Training loop
     for epoch in range(epochs):
         train_loss = train_epoch(
-            epoch, model, train_loader, optimizer, scheduler,
+            result_dir, epoch, wave_transformer_model, train_loader, optimizer, scheduler,
             pad_token_id, accumulation_steps
         )
-        eval_loss = evaluate_epoch(model, eval_loader, pad_token_id)
+        eval_loss = evaluate_epoch(wave_transformer_model, eval_loader, pad_token_id)
 
         train_ppl = math.exp(train_loss)
         eval_ppl = math.exp(eval_loss)
 
         #if (epoch + 1) % 10 == 0:
-        generations = test_generation(model, tokenizer, 100, device, prompts=[
+        generations = test_generation(wave_transformer_model, tokenizer, 100, device, prompts=[
             "The tao that can be told",
             "Success is as dangerous as failure."]
         )
@@ -331,22 +333,20 @@ def train_language_model():
         last_eval_ppl = eval_ppl
         print(f"  Diversity: {diversity}")
         # Save checkpoint
-        checkpoint_path = f"{camel_to_snake(model.__class__.__name__)}_epoch_{epoch + 1}.pt"
+        checkpoint_path = f"{camel_to_snake(wave_transformer_model.__class__.__name__)}_epoch_{epoch + 1}.pt"
         chronicle['generation_samples'].append({
             'epoch': epoch + 1,
             'samples': generations,
             'diversity': diversity,
         })
-        torch.save({
-            'epoch': epoch,
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-        }, f"{result_dir}/train_{checkpoint_path}.pt")
-
-        wave_encoder.save(f"{result_dir}/wave_encoder_{checkpoint_path}.pt")
-        wave_decoder.save(f"{result_dir}/wave_decoder_{checkpoint_path}.pt")
-        model.save(f"{result_dir}/wave_transformer_{checkpoint_path}.pt")
-        print(f"  Checkpoint: {checkpoint_path}")
+        save_model_bundle(
+            wave_transformer_model,
+            result_dir,
+            "wave_transformer",
+            epoch=epoch + 1,
+            optimizer=optimizer,
+            scheduler=scheduler
+        )
         #
         # Compute metrics
 
@@ -362,12 +362,12 @@ def train_language_model():
         chronicle['epoch_records'].append(epoch_data)
 
         # Save chronicle
-        chronicle_path = save_training_chronicle(chronicle, result_dir, f"{camel_to_snake(model.__class__.__name__)}_experiment", timestamp)
+        chronicle_path = save_training_chronicle(chronicle, result_dir, f"{camel_to_snake(wave_transformer_model.__class__.__name__)}_experiment", timestamp)
         print(f"  Session saved: {chronicle_path}")
 
         sleep(0.025)
 
-    return model, chronicle
+    return wave_transformer_model, chronicle
 
 
 if __name__ == "__main__":

@@ -7,6 +7,10 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
+from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
+
 
 def compute_distillation_loss(student_logits, teacher_logits, targets, pad_token_id, alpha=0.5, temperature=2.0):
     """
@@ -175,6 +179,117 @@ def save_training_chronicle(chronicle, result_dir, experiment_name, timestamp):
         json.dump(chronicle, f, indent=2, default=str)
     return output_path
 
+
+from pathlib import Path
+from typing import Tuple, Optional, Union
+import torch
+
+
+def save_model_bundle(
+        model: WaveTransformer,
+        save_dir: Union[str, Path],
+        prefix: str = "model",
+        epoch: Optional[int] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
+):
+    """
+    Save model, encoder, decoder, and optional training state.
+
+    Args:
+        model: WaveTransformer instance
+        save_dir: Directory to save files
+        prefix: Prefix for saved files
+        epoch: Optional epoch number to include in filename
+        optimizer: Optional optimizer state to save
+        scheduler: Optional scheduler state to save
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build filename suffix
+    suffix = f"_epoch_{epoch}" if epoch is not None else ""
+
+    # Save encoder, decoder, and model
+    model.wave_encoder.save(save_dir / f"{prefix}_encoder{suffix}.pt")
+    model.wave_decoder.save(save_dir / f"{prefix}_decoder{suffix}.pt")
+    model.save(save_dir / f"{prefix}_transformer{suffix}.pt")
+
+    # Save training state if provided
+    if optimizer is not None or scheduler is not None:
+        training_state = {}
+        if epoch is not None:
+            training_state['epoch'] = epoch
+        if optimizer is not None:
+            training_state['optimizer_state_dict'] = optimizer.state_dict()
+        if scheduler is not None:
+            training_state['scheduler_state_dict'] = scheduler.state_dict()
+
+        torch.save(training_state, save_dir / f"{prefix}_training{suffix}.pt")
+
+    print(f"✓ Saved model bundle to {save_dir}")
+
+
+def load_model_bundle(
+        load_dir: Union[str, Path],
+        prefix: str = "model",
+        epoch: Optional[int] = None,
+        map_location: Optional[str] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
+) -> Tuple[WaveTransformer, dict]:
+    """
+    Load model, encoder, decoder, and optional training state.
+
+    Args:
+        load_dir: Directory containing saved files
+        prefix: Prefix of saved files
+        epoch: Optional epoch number to load specific checkpoint
+        map_location: Device to load model to ('cpu', 'cuda', etc.)
+        optimizer: Optional optimizer to load state into
+        scheduler: Optional scheduler to load state into
+
+    Returns:
+        Tuple of (WaveTransformer model, training_state dict)
+    """
+    load_dir = Path(load_dir)
+
+    # Build filename suffix
+    suffix = f"_epoch_{epoch}" if epoch is not None else ""
+
+    # Load encoder and decoder
+    encoder = TokenToWaveEncoder.load(
+        load_dir / f"{prefix}_encoder{suffix}.pt",
+        map_location=map_location
+    )
+    decoder = WaveToTokenDecoder.load(
+        load_dir / f"{prefix}_decoder{suffix}.pt",
+        map_location=map_location
+    )
+
+    # Load model
+    model = WaveTransformer.load(
+        load_dir / f"{prefix}_transformer{suffix}.pt",
+        wave_encoder=encoder,
+        wave_decoder=decoder,
+        map_location=map_location
+    )
+
+    # Load training state if exists
+    training_state = {}
+    training_path = load_dir / f"{prefix}_training{suffix}.pt"
+    if training_path.exists():
+        training_state = torch.load(training_path, map_location=map_location)
+
+        if optimizer is not None and 'optimizer_state_dict' in training_state:
+            optimizer.load_state_dict(training_state['optimizer_state_dict'])
+
+        if scheduler is not None and 'scheduler_state_dict' in training_state:
+            scheduler.load_state_dict(training_state['scheduler_state_dict'])
+
+    print(f"✓ Loaded model bundle from {load_dir}")
+
+    return model, training_state
 
 def extract_architecture_details(model):
     layer_details = []

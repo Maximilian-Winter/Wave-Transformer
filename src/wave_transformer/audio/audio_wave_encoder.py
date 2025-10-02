@@ -10,7 +10,7 @@ import torchaudio
 import math
 from typing import Tuple
 
-from wave_transformer.core.transformer import Wave, RMSNorm, MultiQueryFlashAttention
+from wave_transformer.core.transformer import Wave, RMSNorm, FlashAttention
 
 
 class AudioToWave(nn.Module):
@@ -110,11 +110,9 @@ class AudioToWave(nn.Module):
         )
 
         # Temporal modeling - audio has strong temporal dependencies!
-        self.temporal_attention = MultiQueryFlashAttention(
+        self.temporal_attention = FlashAttention(
             d_model=num_harmonics * 3,
-            n_heads_q=num_heads,
-            n_heads_kv=num_heads // 2,  # MQA for efficiency
-            dropout_p=dropout
+            n_heads=num_heads
         )
 
         self.norm = RMSNorm(num_harmonics * 3)
@@ -389,11 +387,9 @@ class SemanticTransformBlock(nn.Module):
         self.norm2 = RMSNorm(d_model)
 
         # Self-attention for finding patterns
-        self.attention = MultiQueryFlashAttention(
+        self.attention = FlashAttention(
             d_model=d_model,
-            n_heads_q=num_heads,
-            n_heads_kv=num_heads // 2,
-            dropout_p=dropout
+            n_heads=num_heads
         )
 
         # FFN for semantic transformation

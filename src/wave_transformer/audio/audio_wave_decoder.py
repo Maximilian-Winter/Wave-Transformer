@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Tuple
-from wave_transformer.core.transformer import  Wave, RMSNorm, MultiQueryFlashAttention
+from wave_transformer.core.transformer import  Wave, RMSNorm, FlashAttention
 
 
 class WaveToAudio(nn.Module):
@@ -527,11 +527,9 @@ class AcousticTransformBlock(nn.Module):
         self.norm1 = RMSNorm(d_model)
         self.norm2 = RMSNorm(d_model)
 
-        self.attention = MultiQueryFlashAttention(
+        self.attention = FlashAttention(
             d_model=d_model,
-            n_heads_q=num_heads,
-            n_heads_kv=num_heads // 2,
-            dropout_p=dropout
+            n_heads=num_heads
         )
 
         self.ffn = nn.Sequential(

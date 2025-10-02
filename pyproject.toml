@@ -1,0 +1,30 @@
+[build-system]
+requires = [  "setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "WaveTransformer"
+version = "0.0.1"
+description = "WaveTransformer contains a PyTorch and a HuggingFace-compatible implementation of the WaveTransformer architecture, which uses wave-based semantic representations for language modeling"
+
+readme = "README.md"
+
+requires-python = ">=3.10"
+classifiers = [ "Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Operating System :: OS Independent" ]
+
+dependencies = [
+    
+]
+
+[[project.authors]]
+name = "Maximilian Winter"
+email = "maximilian.winter.91@gmail.com"
+
+
+[project.urls]
+Homepage = "https://github.com/Maximilian-Winter/WaveTransformer"
+"Bug Tracker" = "https://github.com/Maximilian-Winter/WaveTransformer/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

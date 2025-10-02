@@ -1,0 +1,5 @@
+/examples/language_modelling/*.pt
+/src/wave_transformer/language_modelling/__pycache__
+/src/wave_transformer/core/__pycache__
+/src/wave_transformer/__pycache__
+/src/WaveTransformer.egg-info

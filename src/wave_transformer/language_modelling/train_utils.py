@@ -169,8 +169,8 @@ def cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, base_lr, f
 
 
 
-def save_training_chronicle(chronicle, experiment_name, timestamp):
-    output_path = Path(f"{experiment_name}_{timestamp.replace(':', '-')}.json")
+def save_training_chronicle(chronicle, result_dir, experiment_name, timestamp):
+    output_path = Path(f"{result_dir}/{experiment_name}_{timestamp.replace(':', '-')}.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(chronicle, f, indent=2, default=str)
     return output_path

@@ -1,6 +1,7 @@
 import math
+from pathlib import Path
 
-from typing import Any
+from typing import Any, Union
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -392,7 +393,9 @@ class NonCausalParallelBlock(nn.Module):
         return x + self.dropout(attn_out + ffn_out)
 
 class WaveTransformer(nn.Module):
-    def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6, transformer_num_heads=8, transformer_heads_kv=4,  transformer_d_ff_multi=4, dropout=0.1, use_flash=True):
+    def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6,
+                 transformer_num_heads=8, transformer_heads_kv=4, transformer_d_ff_multi=4,
+                 dropout=0.1, use_flash=True):
         super().__init__()
         self.num_harmonics = num_harmonics
         self.input_dim = num_harmonics * 3
@@ -400,14 +403,17 @@ class WaveTransformer(nn.Module):
         self.wave_encoder = wave_encoder
 
         self.layers = nn.ModuleList([
-            ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads, n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi,  dropout=dropout, use_flash=use_flash) for _ in range(transformer_num_layers)
+            ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
+                          n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi,
+                          dropout=dropout, use_flash=use_flash)
+            for _ in range(transformer_num_layers)
         ])
         self.norm_f = RMSNorm(self.input_dim)
 
         self.wave_decoder = wave_decoder
 
-    def forward(self, encoder_input: dict[str, Any], causal=True, return_encoder_outputs=False, attention_mask=None,
-                plot_waves=False):
+    def forward(self, encoder_input: dict[str, Any], causal=True, return_encoder_outputs=False,
+                attention_mask=None, plot_waves=False):
         wave = self.wave_encoder(attention_mask=attention_mask, **encoder_input)
         x = wave.to_representation()
 
@@ -420,7 +426,6 @@ class WaveTransformer(nn.Module):
             x = block(x, causal=causal, attention_mask=attention_mask)
 
             if plot_waves:
-                # Create temporary wave for visualization
                 layer_wave = Wave.from_representation(x)
                 layer_wave.plot_summary()
                 plt.savefig(f'wave_layer_{i + 1}.png')
@@ -430,6 +435,41 @@ class WaveTransformer(nn.Module):
         output = self.wave_decoder(x, attention_mask=attention_mask)
 
         if return_encoder_outputs:
-            return output, wave  # Returns original encoder wave
+            return output, wave
         return output
+
+    def save(self, path: Union[str, Path]):
+        """Save model state and configuration."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        checkpoint = {
+            'state_dict': self.state_dict(),
+            'config': {
+                'num_harmonics': self.num_harmonics,
+                'transformer_num_layers': len(self.layers),
+                'transformer_num_heads': self.layers[0].attn.n_heads,
+                'transformer_heads_kv': self.layers[0].attn.n_heads,  # Assuming same as n_heads
+                'transformer_d_ff_multi': self.layers[0].ffn.w1.out_features // self.input_dim,
+                'dropout': self.layers[0].dropout.p,
+                'use_flash': self.layers[0].attn.use_flash,
+            }
+        }
+
+        torch.save(checkpoint, path)
+
+    @classmethod
+    def load(cls, path: Union[str, Path], wave_encoder, wave_decoder, map_location=None):
+        """Load model from checkpoint."""
+        checkpoint = torch.load(path, map_location=map_location)
+
+        config = checkpoint['config']
+        model = cls(
+            wave_encoder=wave_encoder,
+            wave_decoder=wave_decoder,
+            **config
+        )
+
+        model.load_state_dict(checkpoint['state_dict'])
+        return model
 

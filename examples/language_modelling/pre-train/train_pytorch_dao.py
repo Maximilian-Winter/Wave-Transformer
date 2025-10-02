@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import random
 from time import sleep
 from datetime import datetime
@@ -158,6 +159,9 @@ def train_language_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
+    result_dir = "./results"
+    os.makedirs(result_dir, exist_ok=True)
+    print(f"Result directory: {result_dir}")
     # Model Parameters
     seq_len = 256
     d_model = 512
@@ -175,11 +179,11 @@ def train_language_model():
     final_lr = 5e-5
     warmup_pct = 0.25
 
-    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
+    model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 
     # Load tokenizer ...
     from tokenizers import Tokenizer
-    tokenizer = Tokenizer.from_pretrained(model_name)
+    tokenizer = Tokenizer.from_file(model_name)
     pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
 
     print("Pad Token ID:", pad_token_id)
@@ -309,7 +313,7 @@ def train_language_model():
         eval_ppl = math.exp(eval_loss)
 
         #if (epoch + 1) % 10 == 0:
-        generations = test_generation(model, tokenizer, 50, device, prompts=[
+        generations = test_generation(model, tokenizer, 100, device, prompts=[
             "The tao that can be told",
             "Success is as dangerous as failure."]
         )
@@ -335,10 +339,13 @@ def train_language_model():
         })
         torch.save({
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-        }, f"wave_transformer_epoch_{epoch + 1}.pt")
+        }, f"{result_dir}/train_{checkpoint_path}.pt")
+
+        wave_encoder.save(f"{result_dir}/wave_encoder_{checkpoint_path}.pt")
+        wave_decoder.save(f"{result_dir}/wave_decoder_{checkpoint_path}.pt")
+        model.save(f"{result_dir}/wave_transformer_{checkpoint_path}.pt")
         print(f"  Checkpoint: {checkpoint_path}")
         #
         # Compute metrics
@@ -350,12 +357,12 @@ def train_language_model():
             'eval_loss': eval_loss,
             'train_perplexity': train_ppl,
             'eval_perplexity': eval_ppl,
-            #'diversity_metrics': diversity
+            'diversity_metrics': diversity
         }
         chronicle['epoch_records'].append(epoch_data)
 
         # Save chronicle
-        chronicle_path = save_training_chronicle(chronicle, f"{camel_to_snake(model.__class__.__name__)}_experiment", timestamp)
+        chronicle_path = save_training_chronicle(chronicle, result_dir, f"{camel_to_snake(model.__class__.__name__)}_experiment", timestamp)
         print(f"  Session saved: {chronicle_path}")
 
         sleep(0.025)

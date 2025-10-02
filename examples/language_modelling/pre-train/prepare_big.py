@@ -15,13 +15,7 @@ from tqdm import tqdm
 
 from wave_transformer.core.transformer import WaveTransformer
 
-from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset, TextDatasetPadded
-from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
-
-from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, compute_language_modeling_loss, \
-    cosine_schedule_with_warmup, camel_to_snake, extract_architecture_details, test_generation, diversity_report, \
-    save_training_chronicle
+from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset
 
 def prepare_dataset():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -57,9 +51,9 @@ def prepare_dataset():
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 1000_000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 500_000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 1500_000, "weight": 0.5},
     ]
     train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
     train_dataset.prepare("prepared_datasets/train_dataset_prepared.json", 8)

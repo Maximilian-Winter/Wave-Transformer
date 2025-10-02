@@ -7,7 +7,7 @@ This repository contains a PyTorch implementation of the WaveTransformer archite
 
 ```bash
 pip install torch torchvision
-pip install transformers datasets accelerate tokenizers
+pip install datasets tokenizers
 pip install flash-attn --no-build-isolation  # For flash attention support
 ```
 

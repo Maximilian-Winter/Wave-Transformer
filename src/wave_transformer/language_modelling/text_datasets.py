@@ -1,6 +1,7 @@
 import random
 import torch
 import pickle
+import json
 from pathlib import Path
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
@@ -25,60 +26,6 @@ def apply_padding(sequence: list[int], target_length: int, pad_token: int) -> tu
     padded_sequence = sequence + [pad_token] * padding_size
     attention_mask = [1] * len(sequence) + [0] * padding_size
     return padded_sequence, attention_mask
-
-
-def _tokenize_batch(args):
-    """Helper function for parallel tokenization"""
-    texts, tokenizer_name, sequence_length, stride, pad_token_id = args
-
-    # Load tokenizer in worker process
-    tokenizer = Tokenizer.from_pretrained(tokenizer_name)
-
-    examples = []
-    buffer = []
-
-    for text in texts:
-        if not isinstance(text, str) or not text.strip():
-            continue
-
-        try:
-            encoding = tokenizer.encode(text, add_special_tokens=False)
-            tokens = encoding.ids
-        except Exception:
-            continue
-
-        buffer.extend(tokens)
-
-        # Process complete windows
-        while len(buffer) >= sequence_length:
-            sequence = buffer[:sequence_length]
-            buffer = buffer[stride:]
-
-            padded_sequence, attention_mask = apply_padding(
-                sequence,
-                sequence_length,
-                pad_token_id
-            )
-
-            examples.append({
-                "input_ids": torch.tensor(padded_sequence, dtype=torch.long),
-                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool)
-            })
-
-    # Handle remaining buffer
-    if buffer:
-        padded_sequence, attention_mask = apply_padding(
-            buffer,
-            sequence_length,
-            pad_token_id
-        )
-
-        examples.append({
-            "input_ids": torch.tensor(padded_sequence, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.bool)
-        })
-
-    return examples
 
 
 def _pack_by_lines_to_token_chunks(
@@ -237,6 +184,7 @@ class BoundedStreamingDataset(IterableDataset):
     - Uses a buffer to accumulate tokens and yield complete windows
     - Properly handles stride for overlapping sequences
     - Processes data incrementally without loading entire stream into memory
+    - Can be prepared (tokenized and saved) and loaded for faster iteration
     """
 
     def __init__(
@@ -249,7 +197,8 @@ class BoundedStreamingDataset(IterableDataset):
             text_column: str = "text",
             skip_first: int = 0,
             max_entries: Optional[int] = None,
-            device: torch.device = torch.device("cpu")
+            device: torch.device = torch.device("cpu"),
+            preloaded_data: Optional[List[Dict]] = None
     ):
         if sequence_length <= 0:
             raise ValueError(f"sequence_length must be positive, got {sequence_length}")
@@ -268,16 +217,28 @@ class BoundedStreamingDataset(IterableDataset):
         self.skip_first = skip_first
         self.max_entries = max_entries
         self.device = device
+        self.preloaded_data = preloaded_data
 
-        if isinstance(data_source, str):
-            try:
-                self.dataset = load_dataset(data_source, split="train", streaming=True)
-            except Exception as e:
-                raise ValueError(f"Failed to load dataset '{data_source}': {e}")
+        if preloaded_data is None:
+            if isinstance(data_source, str):
+                try:
+                    self.dataset = load_dataset(data_source, split="train", streaming=True)
+                except Exception as e:
+                    raise ValueError(f"Failed to load dataset '{data_source}': {e}")
+            else:
+                self.dataset = data_source
         else:
-            self.dataset = data_source
+            self.dataset = None
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
+        if self.preloaded_data is not None:
+            for item in self.preloaded_data:
+                yield {
+                    "input_ids": torch.tensor(item["input_ids"], dtype=torch.long, device=self.device),
+                    "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.bool, device=self.device)
+                }
+            return
+
         buffer = []
         entries_skipped = 0
         entries_yielded = 0
@@ -300,7 +261,6 @@ class BoundedStreamingDataset(IterableDataset):
 
             buffer.extend(tokens)
 
-            # Process complete windows from buffer
             while len(buffer) >= self.sequence_length:
                 sequence = buffer[:self.sequence_length]
                 buffer = buffer[self.stride:]
@@ -325,7 +285,6 @@ class BoundedStreamingDataset(IterableDataset):
 
                 entries_yielded += 1
 
-        # Handle remaining tokens in buffer
         if buffer and (self.max_entries is None or entries_yielded < self.max_entries):
             if entries_skipped >= self.skip_first:
                 padded_sequence, attention_mask = apply_padding(
@@ -339,374 +298,181 @@ class BoundedStreamingDataset(IterableDataset):
                     "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
                 }
 
+    @staticmethod
+    def _process_chunk(args):
+        """Helper for parallel processing."""
+        texts, tokenizer_path, pad_token_id, sequence_length, stride, text_column = args
 
-class PreparedDataset(Dataset):
-    """
-    Dataset that loads pre-prepared examples from disk.
-    Much faster than streaming datasets for repeated training runs.
-    """
+        tokenizer = Tokenizer.from_file(tokenizer_path)
+        results = []
+        buffer = []
 
-    def __init__(self, data_path: Union[str, Path], device: torch.device = torch.device("cpu")):
-        self.data_path = Path(data_path)
-        self.device = device
-
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"Dataset file not found: {self.data_path}")
-
-        print(f"Loading dataset from {self.data_path}...")
-        with open(self.data_path, 'rb') as f:
-            data = pickle.load(f)
-
-        self.examples = data['examples']
-        self.metadata = data.get('metadata', {})
-
-        print(f"Loaded {len(self.examples)} examples")
-        if self.metadata:
-            print(f"Metadata: {self.metadata}")
-
-    def __len__(self):
-        return len(self.examples)
-
-    def __getitem__(self, idx):
-        return {
-            "input_ids": self.examples[idx]["input_ids"].to(self.device),
-            "attention_mask": self.examples[idx]["attention_mask"].to(self.device),
-        }
-
-
-def prepare_and_save_dataset(
-        data_source: Union[str, HFIterableDataset],
-        tokenizer: Tokenizer,
-        pad_token_id: int,
-        save_path: Union[str, Path],
-        sequence_length: int = 512,
-        stride: Optional[int] = None,
-        text_column: str = "text",
-        skip_first: int = 0,
-        max_entries: Optional[int] = None,
-        subset: Optional[str] = None,
-        num_workers: Optional[int] = None,
-        batch_size: int = 1000,
-):
-    """
-    Process a streaming dataset and save it to disk for fast loading.
-
-    Args:
-        data_source: HuggingFace dataset name or dataset object
-        tokenizer: Tokenizer to use
-        pad_token_id: ID for padding token
-        save_path: Where to save the prepared dataset
-        sequence_length: Length of each sequence
-        stride: Stride for sliding window (default: sequence_length, no overlap)
-        text_column: Name of text column in dataset
-        skip_first: Number of entries to skip
-        max_entries: Maximum number of entries to process
-        subset: Dataset subset/configuration name
-        num_workers: Number of parallel workers (None = single process, 0 = auto-detect CPUs)
-        batch_size: Number of texts to process per worker batch (for parallel processing)
-    """
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-
-    stride = stride or sequence_length
-
-    # Determine if we should use parallel processing
-    use_parallel = num_workers is not None
-    if use_parallel:
-        if num_workers == 0:
-            num_workers = max(1, cpu_count() - 1)
-        print(f"Preparing dataset from {data_source} using {num_workers} workers...")
-    else:
-        print(f"Preparing dataset from {data_source} (single process)...")
-
-    print(f"Sequence length: {sequence_length}, Stride: {stride}")
-
-    # Load dataset
-    if isinstance(data_source, str):
-        try:
-            dataset = load_dataset(data_source, subset, split="train", streaming=True)
-        except Exception as e:
-            raise ValueError(f"Failed to load dataset '{data_source}': {e}")
-    else:
-        dataset = data_source
-
-    try:
-        text_iterator = (sample[text_column] for sample in dataset)
-    except KeyError:
-        raise KeyError(f"Text column '{text_column}' not found in dataset")
-
-    # Collect texts first
-    print("Loading texts...")
-    all_texts = []
-    texts_skipped = 0
-
-    with tqdm(desc="Loading texts", unit=" texts") as pbar:
-        for text in text_iterator:
+        for text in texts:
             if not isinstance(text, str) or not text.strip():
                 continue
 
-            if texts_skipped < skip_first:
-                texts_skipped += 1
+            try:
+                encoding = tokenizer.encode(text, add_special_tokens=False)
+                tokens = encoding.ids
+            except Exception:
                 continue
 
-            all_texts.append(text)
-            pbar.update(1)
+            buffer.extend(tokens)
 
-            if max_entries and len(all_texts) >= max_entries * 2:  # Load more than needed
-                break
+            while len(buffer) >= sequence_length:
+                sequence = buffer[:sequence_length]
+                buffer = buffer[stride:]
 
-    print(f"Loaded {len(all_texts)} texts")
+                padded_sequence, attention_mask = apply_padding(
+                    sequence,
+                    sequence_length,
+                    pad_token_id
+                )
 
-    # Process texts
-    if use_parallel:
-        # Get tokenizer name for workers
-        tokenizer_name = tokenizer.get_vocab()  # This won't work, need to pass the name
-        # Workaround: assume tokenizer has a name or we pass it
-        # For now, we'll use a different approach - pass the tokenizer directly
+                results.append({
+                    "input_ids": padded_sequence,
+                    "attention_mask": attention_mask
+                })
 
-        # Split texts into batches
-        text_batches = [all_texts[i:i + batch_size] for i in range(0, len(all_texts), batch_size)]
-
-        print(f"Processing {len(text_batches)} batches with {num_workers} workers...")
-
-        # Get tokenizer identifier (try common attributes)
-        tokenizer_id = None
-        for attr in ['name_or_path', '_name_or_path', 'name']:
-            if hasattr(tokenizer, attr):
-                tokenizer_id = getattr(tokenizer, attr)
-                break
-
-        if tokenizer_id is None:
-            print("Warning: Could not identify tokenizer, falling back to single process")
-            use_parallel = False
-        else:
-            # Prepare arguments for workers
-            worker_args = [
-                (batch, tokenizer_id, sequence_length, stride, pad_token_id)
-                for batch in text_batches
-            ]
-
-            # Process in parallel
-            all_examples = []
-            with Pool(num_workers) as pool:
-                for batch_examples in tqdm(
-                        pool.imap(_tokenize_batch, worker_args),
-                        total=len(worker_args),
-                        desc="Tokenizing batches"
-                ):
-                    all_examples.extend(batch_examples)
-                    if max_entries and len(all_examples) >= max_entries:
-                        break
-
-            examples = all_examples[:max_entries] if max_entries else all_examples
-
-    # Fall back to single process if parallel didn't work
-    if not use_parallel:
-        examples = []
-        buffer = []
-        entries_yielded = 0
-
-        with tqdm(total=len(all_texts), desc="Processing texts", unit=" texts") as pbar:
-            for text in all_texts:
-                try:
-                    encoding = tokenizer.encode(text, add_special_tokens=False)
-                    tokens = encoding.ids
-                except Exception as e:
-                    pbar.update(1)
-                    continue
-
-                buffer.extend(tokens)
-
-                # Process complete windows
-                while len(buffer) >= sequence_length:
-                    sequence = buffer[:sequence_length]
-                    buffer = buffer[stride:]
-
-                    if max_entries and entries_yielded >= max_entries:
-                        break
-
-                    padded_sequence, attention_mask = apply_padding(
-                        sequence,
-                        sequence_length,
-                        pad_token_id
-                    )
-
-                    examples.append({
-                        "input_ids": torch.tensor(padded_sequence, dtype=torch.long),
-                        "attention_mask": torch.tensor(attention_mask, dtype=torch.bool)
-                    })
-
-                    entries_yielded += 1
-
-                pbar.update(1)
-
-                if max_entries and entries_yielded >= max_entries:
-                    break
-
-        # Handle remaining buffer
-        if buffer and (max_entries is None or entries_yielded < max_entries):
+        if buffer:
             padded_sequence, attention_mask = apply_padding(
                 buffer,
                 sequence_length,
                 pad_token_id
             )
-
-            examples.append({
-                "input_ids": torch.tensor(padded_sequence, dtype=torch.long),
-                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool)
+            results.append({
+                "input_ids": padded_sequence,
+                "attention_mask": attention_mask
             })
 
-    # Save to disk
-    print(f"\nSaving {len(examples)} examples to {save_path}...")
-    data = {
-        'examples': examples,
-        'metadata': {
-            'data_source': data_source if isinstance(data_source, str) else 'custom',
-            'subset': subset,
-            'sequence_length': sequence_length,
-            'stride': stride,
-            'text_column': text_column,
-            'skip_first': skip_first,
-            'num_examples': len(examples),
-            'tokenizer_vocab_size': tokenizer.get_vocab_size(),
-            'num_workers': num_workers if use_parallel else 1,
-        }
-    }
+        return results
 
-    with open(save_path, 'wb') as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    def prepare(
+            self,
+            output_path: Union[str, Path],
+            num_workers: Optional[int] = None,
+            chunk_size: int = 1000
+    ):
+        """
+        Tokenize and save the entire dataset to a JSON file.
 
-    file_size_mb = save_path.stat().st_size / (1024 ** 2)
-    print(f"✓ Dataset saved successfully!")
-    print(f"  File size: {file_size_mb:.2f} MB")
-    print(f"  Examples: {len(examples)}")
+        Args:
+            output_path: Path to save the prepared dataset
+            num_workers: Number of parallel workers (None = cpu_count())
+            chunk_size: Number of texts to process per chunk
+        """
+        if self.preloaded_data is not None:
+            raise ValueError("Cannot prepare an already loaded dataset")
 
-    return save_path
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Save tokenizer to temp location for parallel workers
+        tokenizer_path = output_path.parent / f"{output_path.stem}_tokenizer.json"
+        self.tokenizer.save(str(tokenizer_path))
 
-def prepare_and_save_multi_dataset(
-        dataset_specs: List[Dict],
-        tokenizer: Tokenizer,
-        pad_token_id: int,
-        save_path: Union[str, Path],
-        sequence_length: int = 512,
-        stride: Optional[int] = None,
-        text_column: str = "text",
-        global_max_entries: Optional[int] = None,
-        seed: Optional[int] = None,
-        num_workers=8,
-):
-    """
-    Process multiple streaming datasets with weighted sampling and save to disk.
+        all_data = []
 
-    Args:
-        dataset_specs: List of dataset specifications with 'name', 'weight', 'max_entries', etc.
-        tokenizer: Tokenizer to use
-        pad_token_id: ID for padding token
-        save_path: Where to save the prepared dataset
-        sequence_length: Length of each sequence
-        stride: Stride for sliding window
-        text_column: Name of text column in datasets
-        global_max_entries: Maximum total entries across all datasets
-        seed: Random seed for reproducibility
-        num_workers: Number of parallel workers
-    """
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            text_iterator = (sample[self.text_column] for sample in self.dataset)
+        except KeyError:
+            raise KeyError(f"Text column '{self.text_column}' not found in dataset")
 
-    if seed is not None:
-        random.seed(seed)
+        # Collect texts into chunks
+        text_chunks = []
+        current_chunk = []
+        total_texts = 0
 
-    print(f"Preparing multi-dataset from {len(dataset_specs)} sources...")
+        print("Collecting texts...")
+        for text in tqdm(text_iterator):
+            if self.max_entries and total_texts >= self.max_entries:
+                break
 
-    # Create temporary files for each dataset
-    temp_datasets = []
-    for i, spec in enumerate(dataset_specs):
-        temp_path = save_path.parent / f"temp_dataset_{i}.pkl"
-        print(f"\nProcessing dataset {i + 1}/{len(dataset_specs)}: {spec['name']}")
+            if isinstance(text, str) and text.strip():
+                current_chunk.append(text)
+                total_texts += 1
 
-        prepare_and_save_dataset(
-            data_source=spec['name'],
+                if len(current_chunk) >= chunk_size:
+                    text_chunks.append(current_chunk)
+                    current_chunk = []
+
+        if current_chunk:
+            text_chunks.append(current_chunk)
+
+        print(f"Processing {total_texts} texts in {len(text_chunks)} chunks...")
+
+        if num_workers is None or num_workers > 1:
+            workers = num_workers or cpu_count()
+            args = [
+                (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                 self.stride, self.text_column)
+                for chunk in text_chunks
+            ]
+
+            with Pool(workers) as pool:
+                for chunk_results in tqdm(pool.imap(self._process_chunk, args), total=len(text_chunks)):
+                    all_data.extend(chunk_results)
+        else:
+            for chunk in tqdm(text_chunks):
+                args = (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                        self.stride, self.text_column)
+                chunk_results = self._process_chunk(args)
+                all_data.extend(chunk_results)
+
+        # Clean up temp tokenizer file
+        tokenizer_path.unlink()
+
+        # Apply skip_first if needed
+        if self.skip_first > 0:
+            all_data = all_data[self.skip_first:]
+
+        print(f"Saving {len(all_data)} examples to {output_path}...")
+        with open(output_path, 'w') as f:
+            json.dump(all_data, f)
+
+        print(f"Dataset prepared and saved to {output_path}")
+
+    @classmethod
+    def load(
+            cls,
+            input_path: Union[str, Path],
+            tokenizer: Tokenizer,
+            pad_token_id: int,
+            sequence_length: int = 512,
+            device: torch.device = torch.device("cpu")
+    ):
+        """
+        Load a prepared dataset from JSON file.
+
+        Args:
+            input_path: Path to the prepared dataset JSON file
+            tokenizer: Tokenizer instance (for consistency)
+            pad_token_id: Padding token ID
+            sequence_length: Sequence length (should match preparation)
+            device: Device to place tensors on
+
+        Returns:
+            BoundedStreamingDataset instance with preloaded data
+        """
+        input_path = Path(input_path)
+
+        if not input_path.exists():
+            raise FileNotFoundError(f"Prepared dataset not found at {input_path}")
+
+        print(f"Loading prepared dataset from {input_path}...")
+        with open(input_path, 'r') as f:
+            preloaded_data = json.load(f)
+
+        print(f"Loaded {len(preloaded_data)} examples")
+
+        return cls(
+            data_source="",
             tokenizer=tokenizer,
             pad_token_id=pad_token_id,
-            save_path=temp_path,
             sequence_length=sequence_length,
-            stride=stride,
-            text_column=text_column,
-            skip_first=spec.get('skip', 0),
-            max_entries=spec['max_entries'],
-            subset=spec.get('subset', None),
-            num_workers=num_workers,
+            device=device,
+            preloaded_data=preloaded_data
         )
-
-        temp_datasets.append({
-            'path': temp_path,
-            'weight': spec.get('weight', 1.0),
-            'name': spec['name']
-        })
-
-    # Load and combine datasets with weighted sampling
-    print("\nCombining datasets with weighted sampling...")
-    all_examples = []
-    weights = [d['weight'] for d in temp_datasets]
-    total_weight = sum(weights)
-    normalized_weights = [w / total_weight for w in weights]
-
-    # Load all datasets
-    loaded_datasets = []
-    for temp_ds in temp_datasets:
-        with open(temp_ds['path'], 'rb') as f:
-            data = pickle.load(f)
-            loaded_datasets.append(data['examples'])
-
-    # Determine how many samples to take from each dataset
-    if global_max_entries:
-        target_samples = [int(global_max_entries * w) for w in normalized_weights]
-        # Adjust last to hit exact target
-        target_samples[-1] = global_max_entries - sum(target_samples[:-1])
-    else:
-        target_samples = [len(ds) for ds in loaded_datasets]
-
-    # Sample from each dataset
-    for i, (examples, target) in enumerate(zip(loaded_datasets, target_samples)):
-        actual = min(target, len(examples))
-        if actual < len(examples):
-            sampled = random.sample(examples, actual)
-        else:
-            sampled = examples
-        all_examples.extend(sampled)
-        print(f"  {temp_datasets[i]['name']}: {actual} examples (weight: {weights[i]:.2f})")
-
-    # Shuffle combined dataset
-    random.shuffle(all_examples)
-
-    # Save combined dataset
-    print(f"\nSaving combined dataset to {save_path}...")
-    data = {
-        'examples': all_examples,
-        'metadata': {
-            'dataset_specs': dataset_specs,
-            'sequence_length': sequence_length,
-            'stride': stride,
-            'text_column': text_column,
-            'num_examples': len(all_examples),
-            'seed': seed,
-        }
-    }
-
-    with open(save_path, 'wb') as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    # Clean up temp files
-    for temp_ds in temp_datasets:
-        temp_ds['path'].unlink()
-
-    file_size_mb = save_path.stat().st_size / (1024 ** 2)
-    print(f"✓ Combined dataset saved successfully!")
-    print(f"  File size: {file_size_mb:.2f} MB")
-    print(f"  Total examples: {len(all_examples)}")
-
-    return save_path
 
 
 class MultiBoundedStreamingDataset(IterableDataset):
@@ -717,6 +483,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
     - Each dataset maintains its own buffer for proper tokenization
     - Weighted sampling works correctly
     - Properly terminates when all datasets exhausted or global limit reached
+    - Can be prepared (tokenized and saved) and loaded for faster iteration
     """
 
     def __init__(
@@ -730,6 +497,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
             device: torch.device = torch.device("cpu"),
             global_max_entries: Optional[int] = None,
             seed: Optional[int] = None,
+            preloaded_data: Optional[Dict[str, List[Dict]]] = None
     ):
         super().__init__()
 
@@ -751,21 +519,23 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.device = device
         self.global_max_entries = global_max_entries
         self.seed = seed
+        self.preloaded_data = preloaded_data
 
-        for i, spec in enumerate(dataset_specs):
-            if "name" not in spec:
-                raise ValueError(f"Dataset spec {i} missing required 'name' field")
-            if not spec.get("max_entries"):
-                raise ValueError(
-                    f"Dataset {spec['name']} must define max_entries "
-                    "to avoid infinite iteration in streaming mode."
-                )
-            if spec["max_entries"] <= 0:
-                raise ValueError(f"Dataset {spec['name']} max_entries must be positive")
-            if spec.get("skip", 0) < 0:
-                raise ValueError(f"Dataset {spec['name']} skip must be non-negative")
-            if spec.get("weight", 1.0) <= 0:
-                raise ValueError(f"Dataset {spec['name']} weight must be positive")
+        if preloaded_data is None:
+            for i, spec in enumerate(dataset_specs):
+                if "name" not in spec:
+                    raise ValueError(f"Dataset spec {i} missing required 'name' field")
+                if not spec.get("max_entries"):
+                    raise ValueError(
+                        f"Dataset {spec['name']} must define max_entries "
+                        "to avoid infinite iteration in streaming mode."
+                    )
+                if spec["max_entries"] <= 0:
+                    raise ValueError(f"Dataset {spec['name']} max_entries must be positive")
+                if spec.get("skip", 0) < 0:
+                    raise ValueError(f"Dataset {spec['name']} skip must be non-negative")
+                if spec.get("weight", 1.0) <= 0:
+                    raise ValueError(f"Dataset {spec['name']} weight must be positive")
 
     def _create_dataset_iterator(self, spec: Dict):
         """Create an iterator for a single dataset with its own buffer."""
@@ -808,7 +578,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
 
                 buffer.extend(tokens)
 
-                # Yield complete windows
                 while len(buffer) >= self.sequence_length:
                     sequence = buffer[:self.sequence_length]
                     buffer = buffer[self.stride:]
@@ -833,7 +602,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
 
                     entries_yielded += 1
 
-            # Handle remaining buffer
             if buffer and entries_yielded < max_entries and entries_skipped >= skip_first:
                 padded_sequence, attention_mask = apply_padding(
                     buffer,
@@ -849,10 +617,42 @@ class MultiBoundedStreamingDataset(IterableDataset):
         return generate()
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
+        if self.preloaded_data is not None:
+            if self.seed is not None:
+                random.seed(self.seed)
+
+            # Create list of (dataset_name, example_index) pairs with weights
+            weighted_indices = []
+            weights_list = []
+
+            for spec in self.dataset_specs:
+                dataset_name = spec["name"]
+                weight = spec.get("weight", 1.0)
+
+                if dataset_name in self.preloaded_data:
+                    for idx in range(len(self.preloaded_data[dataset_name])):
+                        weighted_indices.append((dataset_name, idx))
+                        weights_list.append(weight)
+
+            # Normalize weights
+            total_weight = sum(weights_list)
+            weights_list = [w / total_weight for w in weights_list]
+
+            # Randomly sample
+            num_samples = self.global_max_entries or len(weighted_indices)
+            sampled_indices = random.choices(weighted_indices, weights=weights_list, k=num_samples)
+
+            for dataset_name, idx in sampled_indices:
+                item = self.preloaded_data[dataset_name][idx]
+                yield {
+                    "input_ids": torch.tensor(item["input_ids"], dtype=torch.long, device=self.device),
+                    "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.bool, device=self.device)
+                }
+            return
+
         if self.seed is not None:
             random.seed(self.seed)
 
-        # Initialize all dataset iterators
         active_iterators = []
         weights = []
 
@@ -865,13 +665,11 @@ class MultiBoundedStreamingDataset(IterableDataset):
         if not active_iterators:
             raise RuntimeError("No datasets could be loaded successfully")
 
-        # Normalize weights
         total_weight = sum(weights)
         weights = [w / total_weight for w in weights]
 
         global_yielded = 0
 
-        # Randomly sample until exhausted or limit reached
         while active_iterators:
             if self.global_max_entries and global_yielded >= self.global_max_entries:
                 break
@@ -895,3 +693,210 @@ class MultiBoundedStreamingDataset(IterableDataset):
         if self.global_max_entries:
             return self.global_max_entries
         return sum(spec["max_entries"] for spec in self.dataset_specs)
+
+    @staticmethod
+    def _process_dataset_chunk(args):
+        """Helper for parallel processing of a single dataset."""
+        texts, tokenizer_path, pad_token_id, sequence_length, stride, text_column = args
+
+        tokenizer = Tokenizer.from_file(tokenizer_path)
+        results = []
+        buffer = []
+
+        for text in texts:
+            if not isinstance(text, str) or not text.strip():
+                continue
+
+            try:
+                encoding = tokenizer.encode(text, add_special_tokens=False)
+                tokens = encoding.ids
+            except Exception:
+                continue
+
+            buffer.extend(tokens)
+
+            while len(buffer) >= sequence_length:
+                sequence = buffer[:sequence_length]
+                buffer = buffer[stride:]
+
+                padded_sequence, attention_mask = apply_padding(
+                    sequence,
+                    sequence_length,
+                    pad_token_id
+                )
+
+                results.append({
+                    "input_ids": padded_sequence,
+                    "attention_mask": attention_mask
+                })
+
+        if buffer:
+            padded_sequence, attention_mask = apply_padding(
+                buffer,
+                sequence_length,
+                pad_token_id
+            )
+            results.append({
+                "input_ids": padded_sequence,
+                "attention_mask": attention_mask
+            })
+
+        return results
+
+    def prepare(
+            self,
+            output_path: Union[str, Path],
+            num_workers: Optional[int] = None,
+            chunk_size: int = 1000
+    ):
+        """
+        Tokenize and save all datasets to a JSON file.
+
+        Args:
+            output_path: Path to save the prepared datasets
+            num_workers: Number of parallel workers (None = cpu_count())
+            chunk_size: Number of texts to process per chunk
+        """
+        if self.preloaded_data is not None:
+            raise ValueError("Cannot prepare an already loaded dataset")
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tokenizer_path = output_path.parent / f"{output_path.stem}_tokenizer.json"
+        self.tokenizer.save(str(tokenizer_path))
+
+        all_datasets = {}
+
+        for spec in self.dataset_specs:
+            dataset_name = spec["name"]
+            print(f"\nProcessing dataset: {dataset_name}")
+
+            try:
+                ds = load_dataset(
+                    spec["name"],
+                    spec.get("subset", None),
+                    split="train",
+                    streaming=True,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to load dataset {dataset_name}: {e}")
+                continue
+
+            try:
+                text_iterator = (sample[self.text_column] for sample in ds)
+            except KeyError:
+                print(f"Warning: Text column '{self.text_column}' not found in {dataset_name}")
+                continue
+
+            text_chunks = []
+            current_chunk = []
+            total_texts = 0
+            max_entries = spec["max_entries"]
+            skip_first = spec.get("skip", 0)
+
+            print(f"Collecting texts from {dataset_name}...")
+            for text in tqdm(text_iterator):
+                if total_texts >= max_entries + skip_first:
+                    break
+
+                if isinstance(text, str) and text.strip():
+                    current_chunk.append(text)
+                    total_texts += 1
+
+                    if len(current_chunk) >= chunk_size:
+                        text_chunks.append(current_chunk)
+                        current_chunk = []
+
+            if current_chunk:
+                text_chunks.append(current_chunk)
+
+            print(f"Processing {total_texts} texts in {len(text_chunks)} chunks...")
+
+            dataset_data = []
+
+            if num_workers is None or num_workers > 1:
+                workers = num_workers or cpu_count()
+                args = [
+                    (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                     self.stride, self.text_column)
+                    for chunk in text_chunks
+                ]
+
+                with Pool(workers) as pool:
+                    for chunk_results in tqdm(pool.imap(self._process_dataset_chunk, args), total=len(text_chunks)):
+                        dataset_data.extend(chunk_results)
+            else:
+                for chunk in tqdm(text_chunks):
+                    args = (chunk, str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                            self.stride, self.text_column)
+                    chunk_results = self._process_dataset_chunk(args)
+                    dataset_data.extend(chunk_results)
+
+            if skip_first > 0:
+                dataset_data = dataset_data[skip_first:]
+
+            if len(dataset_data) > max_entries:
+                dataset_data = dataset_data[:max_entries]
+
+            all_datasets[dataset_name] = dataset_data
+            print(f"Dataset {dataset_name}: {len(dataset_data)} examples")
+
+        tokenizer_path.unlink()
+
+        print(f"\nSaving all datasets to {output_path}...")
+        with open(output_path, 'w') as f:
+            json.dump(all_datasets, f)
+
+        print(f"All datasets prepared and saved to {output_path}")
+
+    @classmethod
+    def load(
+            cls,
+            input_path: Union[str, Path],
+            tokenizer: Tokenizer,
+            pad_token_id: int,
+            dataset_specs: List[Dict],
+            sequence_length: int = 512,
+            device: torch.device = torch.device("cpu"),
+            global_max_entries: Optional[int] = None,
+            seed: Optional[int] = None
+    ):
+        """
+        Load prepared datasets from JSON file.
+
+        Args:
+            input_path: Path to the prepared datasets JSON file
+            tokenizer: Tokenizer instance (for consistency)
+            pad_token_id: Padding token ID
+            dataset_specs: List of dataset specifications (for weights)
+            sequence_length: Sequence length (should match preparation)
+            device: Device to place tensors on
+            global_max_entries: Global max entries limit
+            seed: Random seed for weighted sampling
+
+        Returns:
+            MultiBoundedStreamingDataset instance with preloaded data
+        """
+        input_path = Path(input_path)
+
+        if not input_path.exists():
+            raise FileNotFoundError(f"Prepared datasets not found at {input_path}")
+
+        print(f"Loading prepared datasets from {input_path}...")
+        with open(input_path, 'r') as f:
+            preloaded_data = json.load(f)
+
+        total_examples = sum(len(data) for data in preloaded_data.values())
+        print(f"Loaded {total_examples} examples from {len(preloaded_data)} datasets")
+
+        return cls(
+            dataset_specs=dataset_specs,
+            tokenizer=tokenizer,
+            pad_token_id=pad_token_id,
+            sequence_length=sequence_length,
+            device=device,
+            global_max_entries=global_max_entries,
+            seed=seed,
+            preloaded_data=preloaded_data
+        )

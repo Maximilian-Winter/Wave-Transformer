@@ -17,7 +17,7 @@ from wave_transformer.core.transformer import WaveTransformer
 
 from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset, TextDatasetPadded
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoderSimple
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 
 from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, compute_language_modeling_loss, \
     cosine_schedule_with_warmup, camel_to_snake, extract_architecture_details, test_generation, diversity_report, \
@@ -188,9 +188,9 @@ def train_language_model():
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 1_500_000, "weight": 0.2},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 500_000, "weight": 0.3},
-        {"name": "HuggingFaceFW/fineweb", "skip": 1000, "max_entries": 1_500_000, "weight": 0.5},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 1000, "max_entries": 500_000, "weight": 0.5},
     ]
     train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
     eval_dataset = BoundedStreamingDataset("HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
@@ -198,7 +198,7 @@ def train_language_model():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=2, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, num_workers=2, drop_last=False)
 
-    wave_encoder = TokenToWaveEncoderSimple(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model)
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model, dropout=dropout, max_seq_len=seq_len)
 
     wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model, hidden_mult=2.0, num_heads=8, num_layers=3,
                                  low_rank_output=512)

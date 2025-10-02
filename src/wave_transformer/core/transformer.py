@@ -378,7 +378,7 @@ class NonCausalParallelBlock(nn.Module):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = FlashAttention(d_model, n_heads, use_flash)
+        self.attn = FlashAttention(d_model, n_heads, dropout=dropout, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 

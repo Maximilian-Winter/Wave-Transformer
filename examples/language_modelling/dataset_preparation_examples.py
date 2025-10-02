@@ -63,25 +63,9 @@ def example_multi_dataset_preparation():
     
     # Define dataset specifications
     dataset_specs = [
-        {
-            "name": "wikimedia/wikipedia",
-            "subset": "20231101.en",
-            "skip": 0,
-            "max_entries": 1500000,
-            "weight": 0.3,  # 30% of final dataset
-        },
-        {
-            "name": "roneneldan/TinyStories",
-            "skip": 0,
-            "max_entries": 1000000,
-            "weight": 0.2,  # 40% of final dataset
-        },
-        {
-            "name": "HuggingFaceFW/fineweb",
-            "skip": 0,
-            "max_entries": 2500000,
-            "weight": 0.5,  # 30% of final dataset
-        },
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
     ]
     
     # Prepare and save combined dataset
@@ -91,30 +75,14 @@ def example_multi_dataset_preparation():
         pad_token_id=pad_token_id,
         save_path="prepared_datasets/multi_dataset.pkl",
         sequence_length=512,
-        global_max_entries=5_000_000,  # Total examples in final dataset
+        global_max_entries=1_000_000,  # Total examples in final dataset
         seed=42,  # For reproducibility
     )
 
     dataset_specs = [
-        {
-            "name": "wikimedia/wikipedia",
-            "subset": "20231101.en",
-            "skip": 1_500_000,
-            "max_entries": 1500,
-            "weight": 0.3,  # 30% of final dataset
-        },
-        {
-            "name": "roneneldan/TinyStories",
-            "skip": 1_000_000,
-            "max_entries": 1000,
-            "weight": 0.2,  # 40% of final dataset
-        },
-        {
-            "name": "HuggingFaceFW/fineweb",
-            "skip": 2_500_000,
-            "max_entries": 2500,
-            "weight": 0.5,  # 30% of final dataset
-        },
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 400_000, "max_entries": 4_000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 100_000, "max_entries": 1_000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 500_000, "max_entries": 5_000, "weight": 0.5},
     ]
 
     # Prepare and save combined dataset
@@ -124,7 +92,7 @@ def example_multi_dataset_preparation():
         pad_token_id=pad_token_id,
         save_path="prepared_datasets/multi_eval_dataset.pkl",
         sequence_length=512,
-        global_max_entries=5000,  # Total examples in final dataset
+        global_max_entries=10000,  # Total examples in final dataset
         seed=42,  # For reproducibility
     )
     print(f"\nCombined dataset saved to: {save_path}")

@@ -161,19 +161,19 @@ def train_language_model(big_training: bool = False):
     # Model Parameters
     seq_len = 256
     d_model = 512
-    num_layers = 16
+    num_layers = 4
     num_heads = 8
-    dropout = 0.25
-    num_harmonics = 32
+    dropout = 0.1
+    num_harmonics = 64
 
     # Hyperparameters
-    epochs = 50
-    batch_size = 1
+    epochs = 5
+    batch_size = 32
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
     final_lr = 5e-5
-    warmup_pct = 0.1
+    warmup_pct = 0.25
 
     model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
@@ -212,7 +212,7 @@ def train_language_model(big_training: bool = False):
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)
             eval_corpus = texts[factor:]
-            #train_corpus = train_corpus * 10
+            train_corpus = train_corpus * 100
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)

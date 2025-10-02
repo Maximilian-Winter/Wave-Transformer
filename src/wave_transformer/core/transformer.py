@@ -213,8 +213,7 @@ class FlashAttention(nn.Module):
     Attention using Flash Attention
     """
 
-    def __init__(self, d_model: int, n_heads: int,
-                 use_flash: bool = True):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, use_flash: bool = True):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
@@ -225,6 +224,7 @@ class FlashAttention(nn.Module):
         # Projections
         self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model)
+        self.dropout_p = dropout
 
 
     def forward(self, x: torch.Tensor, causal: bool = True) -> torch.Tensor:
@@ -248,7 +248,7 @@ class FlashAttention(nn.Module):
         # Flash attention with causal mask
         out = flash_attn_func(
             q.half(), k.half(), v.half(),
-            dropout_p=0.0,
+            dropout_p=self.dropout_p if self.training else 0.0,
             softmax_scale=self.scale,
             causal=causal
         )

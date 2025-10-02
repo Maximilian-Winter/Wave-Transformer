@@ -1,7 +1,10 @@
 import torch
 from torch import nn
 
-from audio_wave_encoder import AudioToSemanticWave
+from audio_wave_encoder import AudioToWave
+from wave_transformer.audio.audio_dataset import VCTKDataset, VCTKCollatorSpeakerEmbedding
+from wave_transformer.audio.audio_wave_decoder import WaveToAudio
+from wave_transformer.core.transformer import WaveTransformer
 
 
 class SpeakerConditionedEncoder(nn.Module):
@@ -44,7 +47,7 @@ class SpeakerConditionedAudioToWave(nn.Module):
 
     def __init__(
             self,
-            base_audio_encoder: AudioToSemanticWave,
+            base_audio_encoder: AudioToWave,
             num_speakers: int = 110,  # VCTK has 110 speakers
             speaker_dim: int = 128,
             conditioning_type: str = "film"  # "concat" or "film"
@@ -104,7 +107,7 @@ if __name__ == "__main__":
     from transformers import AutoTokenizer
 
     # Initialize components
-    audio_encoder = AudioToSemanticWave(
+    audio_encoder = AudioToWave(
         num_harmonics=64,
         sample_rate=24000,  # VCTK is 48kHz but often downsampled
         learnable_filterbank=True
@@ -116,13 +119,13 @@ if __name__ == "__main__":
         conditioning_type="film"
     )
 
-    wave_transformer = WaveTransformerForCausalLM(config)
 
-    audio_decoder = SemanticWaveToAudio(
+
+    audio_decoder = WaveToAudio(
         num_harmonics=64,
         sample_rate=24000
     )
-
+    wave_transformer = WaveTransformer(wave_encoder=audio_encoder, wave_decoder=audio_decoder)
     # Dataset
     dataset = VCTKDataset(
         "/path/to/VCTK-Corpus",

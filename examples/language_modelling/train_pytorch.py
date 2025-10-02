@@ -163,12 +163,12 @@ def train_language_model(big_training: bool = False):
     d_model = 512
     num_layers = 16
     num_heads = 8
-    dropout = 0.1
-    num_harmonics = 128
+    dropout = 0.25
+    num_harmonics = 32
 
     # Hyperparameters
-    epochs = 4
-    batch_size = 32
+    epochs = 50
+    batch_size = 1
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -205,18 +205,18 @@ def train_language_model(big_training: bool = False):
             random.shuffle(chapters)
             random.shuffle(chapters)
             texts = [chapter["text"] for chapter in chapters]
-            random.shuffle(texts)
-            random.shuffle(texts)
-            random.shuffle(texts)
-            random.shuffle(texts)
-            factor = int(len(texts) * 0.90)
-            train_corpus = texts * 50
+            factor = int(len(texts) * 0.97)
+            train_corpus = texts[:factor]
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)
             random.shuffle(train_corpus)
             eval_corpus = texts[factor:]
-
+            #train_corpus = train_corpus * 10
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
+            random.shuffle(train_corpus)
             return train_corpus, eval_corpus
 
 

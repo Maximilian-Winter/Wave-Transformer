@@ -594,6 +594,7 @@ def prepare_and_save_multi_dataset(
         text_column: str = "text",
         global_max_entries: Optional[int] = None,
         seed: Optional[int] = None,
+        num_workers=8,
 ):
     """
     Process multiple streaming datasets with weighted sampling and save to disk.
@@ -608,6 +609,7 @@ def prepare_and_save_multi_dataset(
         text_column: Name of text column in datasets
         global_max_entries: Maximum total entries across all datasets
         seed: Random seed for reproducibility
+        num_workers: Number of parallel workers
     """
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -634,6 +636,7 @@ def prepare_and_save_multi_dataset(
             skip_first=spec.get('skip', 0),
             max_entries=spec['max_entries'],
             subset=spec.get('subset', None),
+            num_workers=num_workers,
         )
 
         temp_datasets.append({

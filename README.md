@@ -1,6 +1,6 @@
-# WaveTransformer
+# Wave-Transformer
 
-This repository contains a PyTorch implementation of the WaveTransformer architecture, which uses wave-based semantic representations for language modeling.
+This repository contains a PyTorch implementation of the Wave-Transformer architecture, which uses wave-based representations for the transformer architecture.
 
 
 ## Installation
@@ -16,7 +16,7 @@ pip install flash-attn --no-build-isolation  # For flash attention support
 If you use Wave-Transformer in your research, please cite:
 
 ```bibtex
-@software{wave_transformer,
+@software{Wave-Transformer,
   title = {Wave-Transformer: Wave-based Semantic Representations for Transformer Models},
   author = {Maximilian Winter},
   year = {2025},

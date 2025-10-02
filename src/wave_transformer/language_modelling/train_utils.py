@@ -1,16 +1,11 @@
 import json
-import math
 from pathlib import Path
-import os
 import math as _math
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
-
-from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
-
 
 
 def compute_distillation_loss(student_logits, teacher_logits, targets, pad_token_id, alpha=0.5, temperature=2.0):
@@ -264,128 +259,3 @@ def diversity_report(texts, ns=(1,2,3)):
         out[f"distinct_{n}"] = len(set(all_ngrams)) / max(1, len(all_ngrams))
         out[f"mean_repetition_{n}"] = sum(reps) / max(1, len(reps))
     return out
-
-class GenerationCallback(TrainerCallback):
-    def __init__(self, tokenizer, prompts, generation_loss_threshold=3.0, output_dir="gen_outputs"):
-        self.tokenizer = tokenizer
-        self.prompts = prompts
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
-        self.generation_loss_threshold = generation_loss_threshold
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        model = kwargs['model']
-        model.eval()
-        samples = []
-        if logs and "effective_loss" in logs and logs['effective_loss'] <= self.generation_loss_threshold:
-            for prompt in self.prompts:
-                input_data = self.tokenizer(prompt, return_tensors="pt")
-                attention_mask= input_data['attention_mask'].to(model.device)
-                input_ids = input_data['input_ids'].to(model.device)
-                with torch.no_grad():
-                    output = model.generate(
-                        input_ids,
-                        attention_mask=attention_mask,
-                        do_sample=True,
-                        max_new_tokens=20,
-                        temperature=0.6,
-                        top_p=1.0,
-                        repetition_penalty=1.2,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                    )
-                text = self.tokenizer.decode(output[0], skip_special_tokens=True)
-                samples.append((prompt, text))
-
-            # save to file
-            fname = os.path.join(self.output_dir, f"epoch_{state.epoch:.0f}.txt")
-            with open(fname, "w", encoding="utf-8") as f:
-                for p, t in samples:
-                    print(f"Prompt: {p}\n")
-                    print(f"Generated: {t}\n\n")
-                    f.write(f"Prompt: {p}\n")
-                    f.write(f"Generated: {t}\n\n")
-
-
-
-
-class CustomCallback(TrainerCallback):
-    """
-    Template for Hugging Face Trainer callbacks.
-    You can override any of these methods depending on what you want to monitor/do.
-    """
-
-    def on_init_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        print("✅ Trainer initialized.")
-        return control
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        print("🚀 Training is starting!")
-        return control
-
-    def on_train_end(self, args, state, control, **kwargs):
-        print("🏁 Training finished.")
-        return control
-
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        print(f"🔄 Epoch {state.epoch:.2f} started.")
-        return control
-
-    def on_epoch_end(self, args, state, control, **kwargs):
-        print(f"✅ Epoch {state.epoch:.2f} ended.")
-        return control
-
-    def on_step_begin(self, args, state, control, **kwargs):
-        # Called at the start of each optimizer step
-        return control
-
-    def on_step_end(self, args, state, control, **kwargs):
-        # Called at the end of each optimizer step
-        return control
-
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        print(f"📊 Evaluation results at step {state.global_step}: {metrics}")
-        # Example: trigger generation after eval
-        # control.should_save = True
-        return control
-
-    def on_predict(self, args, state, control, metrics=None, **kwargs):
-        print(f"🔮 Prediction results: {metrics}")
-        return control
-
-    def on_save(self, args, state, control, **kwargs):
-        print(f"💾 Saving checkpoint at step {state.global_step}")
-        return control
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        print(f"📝 Log at step {state.global_step}: {logs}")
-        return control
-
-
-class EffectiveLossCallback(TrainerCallback):
-    """
-    Recomputes the effective average loss across accumulation steps
-    and logs both effective_loss and perplexity.
-    """
-
-    def __init__(self, gradient_accumulation_steps: int):
-        super().__init__()
-        self.gradient_accumulation_steps = gradient_accumulation_steps
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is None:
-            return control
-
-        if "loss" in logs:
-            micro_loss = logs["loss"]
-
-            # Normalize by accumulation steps
-            effective_loss = micro_loss / self.gradient_accumulation_steps
-            logs["effective_loss"] = effective_loss
-
-            # Perplexity = exp(loss), only if finite
-            try:
-                logs["perplexity"] = math.exp(effective_loss)
-            except OverflowError:
-                logs["perplexity"] = float("inf")
-
-        return control

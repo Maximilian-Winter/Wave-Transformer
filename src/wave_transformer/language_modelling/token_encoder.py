@@ -87,7 +87,7 @@ class TokenToWaveEncoder(nn.Module):
             'encoder_state_dict': self.state_dict(),
         }
         with open(config_path, 'w', encoding="utf-8") as f:
-            json.dump(config, f)
+            json.dump(config, f, indent=4)
         torch.save(checkpoint, checkpoint_path)
 
     @classmethod

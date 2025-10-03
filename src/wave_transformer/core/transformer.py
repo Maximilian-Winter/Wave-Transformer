@@ -470,6 +470,106 @@ class MultiQueryFlashAttention(nn.Module):
         return self.out_proj(out)
 
 
+class MultiQueryFlashAttentionAlt(nn.Module):
+    def __init__(self, d_model, n_heads_q, n_heads_kv, dropout_p=0.0, use_flash=True):
+        super().__init__()
+        assert n_heads_q % n_heads_kv == 0, "Hq must be a multiple of Hkv (MQA/GQA)."
+        self.d_model = d_model
+        self.n_heads_q = n_heads_q
+        self.n_heads_kv = n_heads_kv
+        self.d_head = d_model // n_heads_q
+        self.scale = 1.0 / math.sqrt(self.d_head)
+        self.dropout_p = float(dropout_p)
+        self.use_flash = use_flash
+
+        if use_flash:
+            from flash_attn import flash_attn_func, flash_attn_varlen_func
+            self.flash_attn_func = flash_attn_func
+            self.flash_attn_varlen_func = flash_attn_varlen_func
+
+        self.q_proj  = nn.Linear(d_model, n_heads_q * self.d_head, bias=False)
+        self.kv_proj = nn.Linear(d_model, 2 * n_heads_kv * self.d_head, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor, causal: bool = True, attention_mask: Optional[torch.Tensor] = None):
+        B, N, C = x.shape
+        q = self.q_proj(x).reshape(B, N, self.n_heads_q, self.d_head)
+        kv = self.kv_proj(x).reshape(B, N, 2, self.n_heads_kv, self.d_head)
+        k, v = kv.unbind(2)
+
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=x.device, dtype=torch.bool)
+
+        dropout_p = self.dropout_p if (self.training and self.dropout_p > 0) else 0.0
+
+        # Fast dense path (no padding)
+        if self.use_flash and attention_mask is None:
+            compute_dtype = x.dtype if x.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+            q = q.to(compute_dtype).contiguous()
+            k = k.to(compute_dtype).contiguous()
+            v = v.to(compute_dtype).contiguous()
+
+            out = self.flash_attn_func(q, k, v, dropout_p=dropout_p, softmax_scale=self.scale, causal=causal)
+            out = out.reshape(B, N, -1).to(self.out_proj.weight.dtype)
+
+        # Varlen path (with padding)
+        elif self.use_flash and attention_mask is not None:
+            seqlens = attention_mask.sum(dim=1, dtype=torch.int32)                     # (B,)
+            cu_seqlens = F.pad(seqlens.cumsum(0), (1, 0)).to(torch.int32, device=x.device)  # (B+1,)
+            max_seqlen = int(seqlens.max())
+
+            valid_mask = attention_mask.reshape(B * N)                                  # (B*N,)
+            # Pack non-padded
+            q = q.reshape(B * N, self.n_heads_q, self.d_head)[valid_mask]
+            k = k.reshape(B * N, self.n_heads_kv, self.d_head)[valid_mask]
+            v = v.reshape(B * N, self.n_heads_kv, self.d_head)[valid_mask]
+
+            compute_dtype = x.dtype if x.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+            q = q.to(compute_dtype).contiguous()
+            k = k.to(compute_dtype).contiguous()
+            v = v.to(compute_dtype).contiguous()
+
+            out = self.flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen, max_seqlen_k=max_seqlen,
+                dropout_p=dropout_p, softmax_scale=self.scale, causal=causal
+            )
+
+            # Unpack
+            out_padded = x.new_zeros(B * N, self.n_heads_q, self.d_head, dtype=out.dtype)
+            out_padded[valid_mask] = out
+            out = out_padded.reshape(B, N, -1).to(self.out_proj.weight.dtype)
+
+        # Fallback SDPA
+        else:
+            q = q.transpose(1, 2)  # (B, Hq, N, D)
+            k = k.transpose(1, 2)  # (B, Hkv, N, D)
+            v = v.transpose(1, 2)
+
+            # Expand kv to match Hq if needed (MQA/GQA)
+            repeat_factor = self.n_heads_q // self.n_heads_kv
+            if repeat_factor > 1:
+                k = k.repeat_interleave(repeat_factor, dim=1)
+                v = v.repeat_interleave(repeat_factor, dim=1)
+
+            scores = (q @ k.transpose(-2, -1)) * self.scale  # (B, Hq, N, N)
+
+            if causal:
+                causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=scores.device), diagonal=1)
+                scores.masked_fill_(causal_mask, float("-inf"))
+            if attention_mask is not None:
+                pad_mask = ~attention_mask  # True where pad
+                scores.masked_fill_(pad_mask[:, None, None, :], float("-inf"))
+
+            attn = F.softmax(scores, dim=-1)
+            if dropout_p > 0:
+                attn = F.dropout(attn, p=dropout_p, training=True)
+
+            out = (attn @ v).transpose(1, 2).reshape(B, N, -1).to(self.out_proj.weight.dtype)
+
+        return self.out_proj(out)
+
 
 class SwiGLU(nn.Module):
     """
@@ -568,7 +668,12 @@ class WaveTransformer(nn.Module):
         super().__init__()
         self.num_harmonics = num_harmonics
         self.input_dim = num_harmonics * 3
-
+        self.transformer_num_layers = transformer_num_layers
+        self.transformer_num_heads = transformer_num_heads
+        self.transformer_heads_kv = transformer_heads_kv
+        self.transformer_d_ff_multi = transformer_d_ff_multi
+        self.dropout_p = dropout
+        self.use_flash = use_flash
         self.wave_encoder = wave_encoder
 
         self.layers = nn.ModuleList([
@@ -617,12 +722,12 @@ class WaveTransformer(nn.Module):
 
         config = {
             'num_harmonics': self.num_harmonics,
-            'transformer_num_layers': len(self.layers),
-            'transformer_num_heads': self.layers[0].attn.n_heads,
-            'transformer_heads_kv': self.layers[0].attn.n_heads_kv,
-            'transformer_d_ff_multi': self.layers[0].ffn.w1.out_features // self.input_dim,
-            'dropout': self.layers[0].dropout.p,
-            'use_flash': self.layers[0].attn.use_flash,
+            'transformer_num_layers': self.transformer_num_layers,
+            'transformer_num_heads': self.transformer_num_heads,
+            'transformer_heads_kv': self.transformer_heads_kv,
+            'transformer_d_ff_multi': self.transformer_d_ff_multi,
+            'dropout': self.dropout_p,
+            'use_flash': self.use_flash,
         }
 
         checkpoint = {
@@ -630,12 +735,12 @@ class WaveTransformer(nn.Module):
         }
 
         with open(config_path, 'w', encoding="utf-8") as f:
-            json.dump(config, f)
+            json.dump(config, f, indent=4)
         torch.save(checkpoint, checkpoint_path)
 
         # Save encoder and decoder
-        self.wave_encoder.save(path / 'encoder')
-        self.wave_decoder.save(path / 'decoder')
+        self.wave_encoder.save(model_dir)
+        self.wave_decoder.save(model_dir)
 
     @classmethod
     def load(cls, model_dir: Union[str, Path], encoder_cls, decoder_cls, map_location=None):
@@ -647,8 +752,8 @@ class WaveTransformer(nn.Module):
             checkpoint_path = path / 'transformer_state_dict.pt'
 
             # Load encoder and decoder
-            wave_encoder = encoder_cls.load(path / 'encoder', map_location=map_location)
-            wave_decoder = decoder_cls.load(path / 'decoder', map_location=map_location)
+            wave_encoder = encoder_cls.load(path, map_location=map_location)
+            wave_decoder = decoder_cls.load(path, map_location=map_location)
 
             # Load transformer config and create model
             with open(config_path, 'r', encoding="utf-8") as f:

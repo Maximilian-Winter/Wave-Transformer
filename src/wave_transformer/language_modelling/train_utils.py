@@ -205,6 +205,7 @@ def save_model_bundle(
         optimizer: Optional optimizer state to save
         scheduler: Optional scheduler state to save
     """
+
     model.save(save_dir)
 
     if optimizer is not None or scheduler is not None:
@@ -217,7 +218,7 @@ def save_model_bundle(
             training_state['optimizer_state_dict'] = optimizer.state_dict()
         if scheduler is not None:
             training_state['scheduler_state_dict'] = scheduler.state_dict()
-
+        save_dir = Path(save_dir)
         torch.save(training_state, save_dir / f"training.pt")
 
     print(f"✓ Saved model bundle to {save_dir}")

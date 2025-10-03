@@ -7,13 +7,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-from wave_transformer.core.transformer import Wave, NonCausalParallelBlock
+from wave_transformer.core.transformer import Wave, NonCausalParallelBlock, ParallelBlock
 from wave_transformer.language_modelling.embeddings import SinusoidalPositionEmbedding, RotaryPositionEmbedding
 
 class WaveEncoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, num_heads_kv, d_ff, dropout, num_harmonics, num_layers: int = 2, use_flash=False):
         super().__init__()
-        self.layers = nn.ModuleList([NonCausalParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_flash)
+        self.layers = nn.ModuleList([ParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_flash)
                                      for _ in range(num_layers)])
         self.proj = nn.Linear(d_model, num_harmonics)
 

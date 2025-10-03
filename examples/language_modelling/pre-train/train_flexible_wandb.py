@@ -31,7 +31,7 @@ from wave_transformer.language_modelling.train_utils import (
     test_generation,
     diversity_report,
     save_training_chronicle,
-    save_model_bundle
+    save_model_bundle, lm_total_loss
 )
 
 
@@ -143,8 +143,9 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
             logits = model({"token_ids": inputs}, attention_mask=input_mask)
-            loss = compute_language_modeling_loss(logits, targets, pad_token_id)
-
+            loss = lm_total_loss(logits, targets, pad_token_id)
+            loss_terms = loss[1]
+            loss = loss[0]
         if not torch.isfinite(loss):
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
@@ -186,13 +187,14 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                     f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Step {global_step[0]}, LR = {current_lr:.6f}")
 
             # Log to wandb (fixed modulo condition)
-            if rank == 0 and global_step[0] % 250 == 0 and use_wandb and wandb.run is not None:
+            if rank == 0 and global_step[0] % 50 == 0 and use_wandb and wandb.run is not None:
                 wandb.log({
                     'train/loss': loss_value,
                     'train/perplexity': math.exp(loss_value),
                     'train/learning_rate': current_lr,
                     'train/global_step': global_step[0],
-                    'train/epoch': epoch
+                    'train/epoch': epoch,
+                    **loss_terms
                 }, step=global_step[0])
 
             # Save checkpoint
@@ -397,11 +399,11 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 4
-    batch_size = 32 if torch.cuda.is_available() else 4
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
-    base_lr = 3e-4
-    final_lr = 5e-5
+    base_lr = 2.5e-4
+    final_lr = 2.5e-5
     warmup_pct = 0.025
 
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
@@ -460,9 +462,9 @@ def train_language_model_distributed(rank, world_size):
         pad_token_id=pad_token_id,
         sequence_length=seq_len,
         batch_size=batch_size,
-        prefetch_batches=1024,  # reservoir
+        prefetch_batches=256,  # reservoir
         prefetch_chunk_batches=8,  # quick refills
-        tokenizer_batch_size=256,  # try 128/256/512
+        tokenizer_batch_size=128,  # try 128/256/512
         weighted_sampling=False,
         global_max_entries=None,
         seed=42,
@@ -502,7 +504,7 @@ def train_language_model_distributed(rank, world_size):
     wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        num_layers=4,
+        num_layers=2,
         d_model=d_model,
         dropout=dropout,
         max_seq_len=seq_len
@@ -520,7 +522,7 @@ def train_language_model_distributed(rank, world_size):
 
     if rank == 0:
         print("Creating model...")
-    dtype = torch.float32
+    dtype = torch.bfloat16
 
     wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,
@@ -529,7 +531,7 @@ def train_language_model_distributed(rank, world_size):
         transformer_num_heads=num_heads,
         transformer_heads_kv=num_heads,
         transformer_num_layers=num_layers,
-        transformer_d_ff_multi=4,
+        transformer_d_ff_multi=3,
         dropout=dropout
     ).to(device, dtype=dtype)
 

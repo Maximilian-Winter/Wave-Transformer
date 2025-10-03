@@ -127,7 +127,7 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
     return tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
 
 
-def test_generation(model, tokenizer, max_tokens=50, device="cuda", temperature=0.4, top_p=1.0, repetition_penalty=1.0, prompts=None):
+def test_generation(model, tokenizer, max_tokens=50, device="cuda", temperature=0.7, top_p=0.9, repetition_penalty=1.2, prompts=None):
     # Generate samples
     if prompts is None:
         prompts = [
@@ -334,16 +334,72 @@ def get_logits_tensor(logits):
     else:
         return logits.logits
 
-def compute_language_modeling_loss(logits, targets, pad_token_id):
-    logits = get_logits_tensor(logits)
-    batch_size, seq_len, vocab_size = logits.shape
-    return F.cross_entropy(
-        logits.reshape(batch_size * seq_len, vocab_size),
-        targets.reshape(batch_size * seq_len),
-        ignore_index=pad_token_id,
-        label_smoothing=0.05
-    )
+def lm_total_loss(logits, targets, pad_token_id):
+    ce = compute_language_modeling_loss(logits, targets, pad_token_id, label_smoothing=0.05)
+    zl = z_loss(logits, coeff=1e-4)
+    ul = repetition_unlikelihood(logits, targets, pad_token_id, window=64, coeff=2e-2)
+    return ce + zl + ul, {"ce": ce.item(), "z": zl.item(), "ul": ul.item()}
 
+def compute_language_modeling_loss(logits, targets, pad_token_id, label_smoothing=0.05):
+    # logits: (B, T, V), targets: (B, T)
+    logits = logits.float()              # avoid bf16 precision issues inside CE
+    targets = targets.long()
+    B, T, V = logits.shape
+    loss = F.cross_entropy(
+        logits.reshape(B * T, V),
+        targets.reshape(B * T),
+        ignore_index=pad_token_id,
+        label_smoothing=label_smoothing,
+        reduction="mean",
+    )
+    return loss
+
+def z_loss(logits, coeff=1e-4):
+    # logits: (B, T, V)
+    # z = logsumexp along vocab
+    z = torch.logsumexp(logits.float(), dim=-1)        # (B, T)
+    return coeff * (z ** 2).mean()
+
+def repetition_unlikelihood(logits, targets, pad_token_id, window=64, coeff=2e-2):
+    """
+    Penalize predicting tokens that already appeared in the last `window` steps
+    of the same sequence. Cheap token-level variant.
+    """
+    logits = logits.float()               # (B, T, V)
+    B, T, V = logits.shape
+    targets = targets.long()              # (B, T)
+
+    # Build a mask of "negative" tokens per position: tokens seen in the last `window` steps
+    neg_masks = []
+    for b in range(B):
+        seen = set()
+        row_masks = []
+        for t in range(T):
+            # tokens seen in [max(0, t-window), t)
+            start = max(0, t - window)
+            context = targets[b, start:t]
+            # exclude PAD
+            seen_tokens = set(context[context != pad_token_id].tolist())
+            row_masks.append(seen_tokens)
+        neg_masks.append(row_masks)
+
+    # Compute p = softmax(logits)
+    probs = torch.softmax(logits, dim=-1)              # (B, T, V)
+    # For each (b,t), gather probabilities of negatives and apply -log(1 - p)
+    ul_terms = []
+    for b in range(B):
+        for t in range(T):
+            neg = neg_masks[b][t]
+            if not neg:
+                continue
+            p_neg = probs[b, t, list(neg)]             # (K,)
+            # clamp to avoid log(0)
+            ul = -torch.log(torch.clamp(1.0 - p_neg, min=1e-6))
+            ul_terms.append(ul.mean())
+
+    if not ul_terms:
+        return logits.new_tensor(0.0)
+    return coeff * torch.stack(ul_terms).mean()
 
 def compute_diversity_metrics(texts, n=3):
     all_ngrams = []

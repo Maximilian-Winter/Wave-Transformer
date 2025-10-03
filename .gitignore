@@ -13,3 +13,4 @@
 /.idea/*
 
 
+/examples/language_modelling/pre-train/wandb

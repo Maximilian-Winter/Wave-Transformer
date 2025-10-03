@@ -338,14 +338,20 @@ class FlashAttention(nn.Module):
 
 class MultiQueryFlashAttention(nn.Module):
     """
-    Flash Attention with Multi-Query (MQA) or Grouped-Query Attention (GQA),
-    with support for padding masks (via varlen API).
+    Flash Attention with Multi-Query (MQA) or Grouped-Query Attention (GQA)
+    Supports both dense flash_attn_func and varlen flash_attn_func (for padded inputs).
     """
 
-    def __init__(self, d_model: int, n_heads_q: int, n_heads_kv: int,
-                 dropout_p: float = 0.0, use_flash: bool = True):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads_q: int,
+        n_heads_kv: int,
+        dropout_p: float = 0.0,
+        use_flash: bool = True
+    ):
         super().__init__()
-        assert n_heads_q % n_heads_kv == 0, "n_heads_q must be divisible by n_heads_kv"
+        assert n_heads_q % n_heads_kv == 0
 
         self.d_model = d_model
         self.n_heads_q = n_heads_q
@@ -360,38 +366,57 @@ class MultiQueryFlashAttention(nn.Module):
             self.flash_attn_func = flash_attn_func
             self.flash_attn_varlen_func = flash_attn_varlen_func
 
+        # Q, KV, and output projections
         self.q_proj = nn.Linear(d_model, n_heads_q * self.d_head, bias=False)
         self.kv_proj = nn.Linear(d_model, 2 * n_heads_kv * self.d_head, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
-    def forward(self, x: torch.Tensor, causal: bool = True,
-                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        causal: bool = True,
+        attention_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Args:
-            x: (B, N, C)
-            attention_mask: (B, N) with 1 for valid tokens, 0 for padding
+            x: (B, N, C) input
+            causal: whether to apply causal masking
+            attention_mask: (B, N) binary mask (1=keep, 0=pad) or None
         """
         B, N, C = x.shape
-
-        # Project Q and KV
         q = self.q_proj(x).reshape(B, N, self.n_heads_q, self.d_head)
         kv = self.kv_proj(x).reshape(B, N, 2, self.n_heads_kv, self.d_head)
-        k, v = kv.unbind(2)  # (B, N, Hkv, Dh)
+        k, v = kv.unbind(2)
 
-        if self.use_flash and attention_mask is not None:
-            # ---- Varlen FlashAttention ----
-            # Convert mask -> sequence lengths
-            seqlens = attention_mask.sum(dim=-1, dtype=torch.int32)  # (B,)
-            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=x.device)
-            cu_seqlens[1:] = torch.cumsum(seqlens, dim=0)
-            max_seqlen = seqlens.max().item()
+        if self.use_flash and attention_mask is None:
+            # Fast path: dense flash attention
+            q, k, v = q.half(), k.half(), v.half()
+            out = self.flash_attn_func(
+                q, k, v,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                softmax_scale=self.scale,
+                causal=causal
+            )
+            out = out.to(dtype=x.dtype).reshape(B, N, -1)
 
-            # Flatten valid tokens
-            q = q[attention_mask.bool()].reshape(-1, self.n_heads_q, self.d_head)
-            k = k[attention_mask.bool()].reshape(-1, self.n_heads_kv, self.d_head)
-            v = v[attention_mask.bool()].reshape(-1, self.n_heads_kv, self.d_head)
 
-            # Run flash attn varlen
+        elif self.use_flash and attention_mask is not None:
+
+            # Varlen path: supports padding
+            seqlens = attention_mask.sum(dim=1, dtype=torch.int32)
+            cu_seqlens = F.pad(seqlens.cumsum(0), (1, 0)).to(dtype=torch.int32, device=x.device)
+            max_seqlen = int(seqlens.max())
+
+            # Pack only non-padded tokens
+            valid_mask = attention_mask.bool().flatten()  # (B*N,)
+
+            # Reshape then select valid tokens
+            q = q.reshape(B * N, self.n_heads_q, self.d_head)[valid_mask]
+            k = k.reshape(B * N, self.n_heads_kv, self.d_head)[valid_mask]
+            v = v.reshape(B * N, self.n_heads_kv, self.d_head)[valid_mask]
+
+            q, k, v = q.half(), k.half(), v.half()
+
             out = self.flash_attn_varlen_func(
                 q, k, v,
                 cu_seqlens_q=cu_seqlens,
@@ -400,30 +425,20 @@ class MultiQueryFlashAttention(nn.Module):
                 max_seqlen_k=max_seqlen,
                 dropout_p=self.dropout_p if self.training else 0.0,
                 softmax_scale=self.scale,
-                causal=causal,
-            )
-
-            # Re-pad back to (B, N, C)
-            out_padded = x.new_zeros(B, N, self.n_heads_q * self.d_head)
-            mask_idx = attention_mask.bool().unsqueeze(-1).expand(-1, -1, self.n_heads_q * self.d_head)
-            out_padded[mask_idx] = out.reshape(-1, self.n_heads_q * self.d_head)
-            out = out_padded
-
-        elif self.use_flash:
-            # ---- Standard FlashAttention (no mask, full seq) ----
-            q, k, v = [t.transpose(1, 2).contiguous().half() for t in (q, k, v)]
-            out = self.flash_attn_func(
-                q, k, v,
-                dropout_p=self.dropout_p if self.training else 0.0,
-                softmax_scale=self.scale,
                 causal=causal
             )
-            out = out.to(x.dtype).transpose(1, 2).reshape(B, N, -1)
 
+            # Unpack back to original shape with padding
+            out_padded = torch.zeros(B * N, self.n_heads_q, self.d_head,
+                                     dtype=out.dtype, device=out.device)
+
+            out_padded[valid_mask] = out
+            out = out_padded.reshape(B, N, -1)
+            out = out.to(dtype=self.out_proj.weight.dtype)
         else:
-            # ---- Manual fallback ----
+            # Fallback manual MHA (with attention mask)
             q = q.transpose(1, 2)  # (B, Hq, N, D)
-            k = k.transpose(1, 2)
+            k = k.transpose(1, 2)  # (B, Hkv, N, D)
             v = v.transpose(1, 2)
 
             repeat_factor = self.n_heads_q // self.n_heads_kv
@@ -432,20 +447,28 @@ class MultiQueryFlashAttention(nn.Module):
                 v = v.repeat_interleave(repeat_factor, dim=1)
 
             scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+
             if causal:
                 causal_mask = torch.triu(
-                    torch.ones(N, N, dtype=torch.bool, device=x.device),
+                    torch.ones(N, N, dtype=torch.bool, device=scores.device),
                     diagonal=1
                 )
                 scores.masked_fill_(causal_mask, float("-inf"))
+
             if attention_mask is not None:
-                mask = attention_mask[:, None, None, :].to(torch.bool)
-                scores.masked_fill_(~mask, float("-inf"))
+                # Convert mask to additive form (B, 1, 1, N)
+                mask = attention_mask[:, None, None, :].to(dtype=scores.dtype)
+                scores = scores.masked_fill(mask == 0, float("-inf"))
 
             attn = F.softmax(scores, dim=-1)
-            out = torch.matmul(attn, v).transpose(1, 2).reshape(B, N, -1)
+            if self.training and self.dropout_p > 0:
+                attn = F.dropout(attn, p=self.dropout_p)
+
+            out = torch.matmul(attn, v)
+            out = out.transpose(1, 2).reshape(B, N, -1)
 
         return self.out_proj(out)
+
 
 
 class SwiGLU(nn.Module):
@@ -490,7 +513,7 @@ class ParallelBlock(nn.Module):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = MultiQueryFlashAttention(d_model, n_heads, n_heads_kv, dropout_p=dropout, use_flash=use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=n_heads, n_heads_kv=n_heads_kv, dropout_p=dropout, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 

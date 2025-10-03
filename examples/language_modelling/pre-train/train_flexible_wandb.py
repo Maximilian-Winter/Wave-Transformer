@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
-import wandb
+#import wandb
 
 from torch import optim, nn
 from torch.utils.data import DataLoader, get_worker_info, IterableDataset
@@ -398,7 +398,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 3
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -408,7 +408,7 @@ def train_language_model_distributed(rank, world_size):
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 
     # Initialize wandb (only on rank 0)
-    use_wandb = True
+    use_wandb = False
     if rank == 0 and use_wandb:
         wandb.init(
             project="wave-transformer-training",

@@ -45,11 +45,11 @@ class TokenToWaveEncoder(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = RotaryPositionEmbedding(d_model, max_seq_len)
 
-        self.freq_generator = WaveEncoderBlock(d_model, 8, 4, d_ff,
+        self.freq_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                                dropout, num_harmonics, num_layers, use_flash)
-        self.amp_generator = WaveEncoderBlock(d_model, 8, 4, d_ff,
+        self.amp_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                               dropout, num_harmonics, num_layers, use_flash)
-        self.phase_generator = WaveEncoderBlock(d_model, 8, 4, d_ff,
+        self.phase_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                                 dropout, num_harmonics, num_layers, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):

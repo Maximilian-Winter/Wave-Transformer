@@ -174,7 +174,7 @@ def train_language_model():
 
     # Hyperparameters
     epochs = 5
-    batch_size = 32
+    batch_size = 16
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -197,7 +197,7 @@ def train_language_model():
     dataset_specs = [
         {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
         {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 1000, "max_entries": 500_000, "weight": 0.5},
+        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
     ]
     with open("prepared_datasets/train_dataset_prepared.json", "r") as f:
         prepared_datasets = json.load(f)
@@ -212,7 +212,7 @@ def train_language_model():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, drop_last=False)
     print("Datasets loaded...")
-    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model,
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=2, d_model=d_model,
                                       dropout=dropout, max_seq_len=seq_len)
 
     wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model,

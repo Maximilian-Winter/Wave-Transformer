@@ -1,19 +1,7 @@
-import json
-import math
 import random
-from time import sleep
-from datetime import datetime
 
-import numpy as np
 import torch
-from matplotlib import pyplot as plt
 
-from torch import optim, nn
-from torch.utils.data import DataLoader
-
-from tqdm import tqdm
-
-from wave_transformer.core.transformer import WaveTransformer
 
 from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset
 
@@ -22,7 +10,7 @@ def prepare_dataset():
     print(f"Device: {device}")
 
     # Model Parameters
-    seq_len = 256
+    seq_len = 512
     d_model = 512
     num_layers = 4
     num_heads = 8
@@ -59,9 +47,9 @@ def prepare_dataset():
     train_dataset.prepare("prepared_datasets/train_dataset_prepared.json", 8)
 
     eval_dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 4000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 1000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 5000, "weight": 0.5},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 1000_000, "max_entries": 4000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 500_000, "max_entries": 1000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 1500_000, "max_entries": 5000, "weight": 0.5},
     ]
     eval_dataset = MultiBoundedStreamingDataset(eval_dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
     eval_dataset.prepare("prepared_datasets/eval_dataset_prepared.json", 8)

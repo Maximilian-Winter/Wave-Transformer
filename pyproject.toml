@@ -17,6 +17,7 @@ dependencies = [
     "torchvision",
     "tokenizers",
     "datasets",
+    "wandb",
     "matplotlib>=3.10.6",
 ]
 

@@ -300,6 +300,8 @@ class BoundedStreamingDataset(IterableDataset):
                     "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
                 }
 
+    def __len__(self) -> int:
+        return  self.max_entries
     @staticmethod
     def _process_entries(args):
         """Worker function: load tokenizer, process entries, return tokenized samples."""

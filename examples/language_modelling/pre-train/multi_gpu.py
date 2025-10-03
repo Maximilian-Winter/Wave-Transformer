@@ -10,11 +10,10 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 from matplotlib import pyplot as plt
 
 from torch import optim, nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
@@ -50,6 +49,25 @@ def setup(rank, world_size):
 def cleanup():
     """Clean up the distributed environment."""
     dist.destroy_process_group()
+
+
+class DistributedIterableWrapper(torch.utils.data.IterableDataset):
+    """
+    Wrapper to make IterableDataset work with distributed training.
+    Each GPU will get different batches from the stream.
+    """
+
+    def __init__(self, dataset, rank, world_size):
+        super().__init__()
+        self.dataset = dataset
+        self.rank = rank
+        self.world_size = world_size
+
+    def __iter__(self):
+        # Each GPU skips samples based on its rank
+        for i, sample in enumerate(self.dataset):
+            if i % self.world_size == self.rank:
+                yield sample
 
 
 def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank, accumulation_steps=1):
@@ -276,65 +294,45 @@ def train_language_model_distributed(rank, world_size):
         {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
     ]
 
-    #with open("prepared_datasets/train_dataset_prepared.json", "r") as f:
-    #    prepared_datasets = json.load(f)
-
+    # Create datasets with different seeds for each rank to ensure different data
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs, tokenizer, pad_token_id, seq_len,
         device=torch.device(f'cuda:{rank}'),
+        seed=42 + rank,  # Different seed per GPU for different data
         preloaded_data=None
     )
 
-    #with open("prepared_datasets/eval_dataset_prepared.json", "r") as f:
-    #    eval_dataset_data = json.load(f)
-
     eval_dataset = BoundedStreamingDataset(
         "HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
-        max_entries=5000, skip_first=500_000,
+        max_entries=5000, skip_first=500_000 + rank * 5000,  # Different skip per GPU
         device=torch.device(f'cuda:{rank}'),
         preloaded_data=None
     )
 
     if rank == 0:
-        print("Prepared Datasets loaded...")
+        print("Datasets created...")
 
-    # Create distributed samplers
-    train_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-        seed=42
-    )
+    # Wrap datasets for distributed training
+    distributed_train_dataset = DistributedIterableWrapper(train_dataset, rank, world_size)
+    distributed_eval_dataset = DistributedIterableWrapper(eval_dataset, rank, world_size)
 
-    eval_sampler = DistributedSampler(
-        eval_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=False
-    )
-
-    # Create dataloaders with distributed samplers
+    # Create dataloaders WITHOUT samplers (they don't work with IterableDataset)
     train_loader = DataLoader(
-        train_dataset,
+        distributed_train_dataset,
         batch_size=batch_size,
-        sampler=train_sampler,
         drop_last=True,
-        num_workers=2,
-        pin_memory=True
+
     )
 
     eval_loader = DataLoader(
-        eval_dataset,
+        distributed_eval_dataset,
         batch_size=eval_batch_size,
-        sampler=eval_sampler,
         drop_last=False,
-        num_workers=2,
-        pin_memory=True
+
     )
 
     if rank == 0:
-        print("Datasets loaded...")
+        print("Dataloaders created...")
 
     # Create model components
     wave_encoder = TokenToWaveEncoder(
@@ -392,8 +390,9 @@ def train_language_model_distributed(rank, world_size):
         weight_decay=0.1
     )
 
-    # Create scheduler
-    steps_per_epoch = len(train_loader) // accumulation_steps
+    # Create scheduler - note: steps should account for distributed training
+    # Each GPU sees fewer batches, so adjust accordingly
+    steps_per_epoch = (1000000 // world_size) // (batch_size * accumulation_steps)  # Approximate
     total_steps = epochs * steps_per_epoch
     warmup_steps = max(1, int(warmup_pct * total_steps))
 
@@ -446,8 +445,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Training loop
     for epoch in range(epochs):
-        # Set epoch for distributed sampler
-        train_sampler.set_epoch(epoch)
+        # For streaming datasets, we don't need to set epoch
 
         # Train
         train_loss = train_epoch(

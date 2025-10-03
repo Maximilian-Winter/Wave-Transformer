@@ -14,3 +14,5 @@
 
 
 /examples/language_modelling/pre-train/wandb
+/examples/language_modelling/epoch_0_batch_4999.zip
+/examples/language_modelling/epoch_0_batch_4999/

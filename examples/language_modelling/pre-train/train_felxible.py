@@ -85,8 +85,10 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
 
 
 def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank,
-                accumulation_steps=1, use_ddp=True, global_step=[0]):
+                accumulation_steps=1, use_ddp=True, global_step=None):
     """Training epoch with distributed support."""
+    if global_step is None:
+        global_step = [0]
     model.train()
     epoch_losses = []
 

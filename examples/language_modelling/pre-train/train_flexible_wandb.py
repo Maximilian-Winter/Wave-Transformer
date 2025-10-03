@@ -468,7 +468,7 @@ def train_language_model_distributed(rank, world_size):
         seed=42,
         move_to_device=False,
         device=None,
-        debug=True,  # <-- enable periodic prints
+        debug=False,  # <-- enable periodic prints
         log_interval_s=5.0,
         stats_window_s=60.0,
     )

@@ -315,7 +315,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     break
 
                 # Collect samples from all active datasets based on weights
-                batch_buffer = []
                 samples_needed = min(
                     fetch_size,
                     (self.global_max_entries - global_yielded) if self.global_max_entries else fetch_size
@@ -360,23 +359,14 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 # Shuffle samples based on weights
                 if all_samples:
                     random.shuffle(all_samples)
-                    batch_buffer = [sample for _, sample in all_samples]
 
-                # Yield batches from buffer
-                while len(batch_buffer) >= self.batch_size:
-                    batch = self._create_batch(batch_buffer[:self.batch_size])
-                    yield batch
-                    batch_buffer = batch_buffer[self.batch_size:]
-                    global_yielded += self.batch_size
+                    # Yield individual samples
+                    for _, sample in all_samples:
+                        yield sample
+                        global_yielded += 1
 
-                    if self.global_max_entries and global_yielded >= self.global_max_entries:
-                        return
-
-                # Handle remaining samples
-                if batch_buffer and not active_specs:  # No more data available
-                    batch = self._create_batch(batch_buffer)
-                    yield batch
-                    return
+                        if self.global_max_entries and global_yielded >= self.global_max_entries:
+                            return
 
         else:
             # Sequential processing with chunked fetching
@@ -402,37 +392,15 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     if ds is None:
                         break
 
-                    batch_buffer = []
                     for sample in ds:
                         text = sample.get(spec.text_column, "")
                         tokenized = self._tokenize_sample(text)
-                        batch_buffer.append(tokenized)
+                        yield tokenized
                         spec.current_idx += 1
+                        global_yielded += 1
 
-                        # Yield complete batches
-                        if len(batch_buffer) >= self.batch_size:
-                            batch = self._create_batch(batch_buffer[:self.batch_size])
-                            yield batch
-                            batch_buffer = batch_buffer[self.batch_size:]
-                            global_yielded += self.batch_size
-
-                            if self.global_max_entries and global_yielded >= self.global_max_entries:
-                                # Yield any remaining samples before returning
-                                if batch_buffer:
-                                    batch = self._create_batch(batch_buffer)
-                                    yield batch
-                                return
-
-                    # Yield remaining samples from this chunk
-                    if batch_buffer:
-                        # Only yield if we're done with this dataset or global limit reached
-                        if (spec.max_entries and spec.current_idx >= spec.max_entries) or \
-                                (self.global_max_entries and global_yielded + len(batch_buffer) >= self.global_max_entries):
-                            batch = self._create_batch(batch_buffer)
-                            yield batch
-                            global_yielded += len(batch_buffer)
-                            if self.global_max_entries and global_yielded >= self.global_max_entries:
-                                return
+                        if self.global_max_entries and global_yielded >= self.global_max_entries:
+                            return
 
     def _create_batch(self, samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """Stack individual samples into a batch."""
@@ -450,7 +418,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
     def __len__(self) -> int:
         total_samples = self.global_max_entries if self.global_max_entries else \
             sum(spec.max_entries for spec in self.dataset_specs if spec.max_entries is not None)
-        return total_samples // self.batch_size  # Return number of batches, not samples
+        return total_samples  # Return number of samples, not batches
 
 
 # Example usage

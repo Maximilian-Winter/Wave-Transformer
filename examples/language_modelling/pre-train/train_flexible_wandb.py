@@ -72,12 +72,15 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
     Each GPU will get different batches from the stream.
     """
 
-    def __init__(self, dataset, rank, world_size):
+    def __init__(self, dataset, rank, world_size, max_entries):
         super().__init__()
         self.dataset = dataset
         self.rank = rank
         self.world_size = world_size
+        self.max_entries = max_entries
 
+    def __len__(self):
+        return self.max_entries
     def __iter__(self):
         # Each GPU skips samples based on its rank
         for i, sample in enumerate(self.dataset):
@@ -147,6 +150,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
+            print("inputs shape:", inputs.shape)
             logits = model({"token_ids": inputs}, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
 
@@ -468,7 +472,7 @@ def train_language_model_distributed(rank, world_size):
     # Use wrapper for distribution
     if use_ddp:
         train_dataset_wrapped = DistributedIterableWrapper(
-            train_dataset, rank, world_size
+            train_dataset, rank, world_size, entries_per_dataset
         )
         train_loader = DataLoader(
             train_dataset_wrapped,

@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 from tqdm import tqdm
 
 from wave_transformer.core.transformer import WaveTransformer
-from wave_transformer.language_modelling.new_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
+from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 from wave_transformer.language_modelling.train_utils import (
@@ -194,7 +194,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                     'train/learning_rate': current_lr,
                     'train/global_step': global_step[0],
                     'train/epoch': epoch,
-                    **loss_terms
+                    'train/z_loss': loss_terms["z"],
                 }, step=global_step[0])
 
             # Save checkpoint
@@ -217,6 +217,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             if rank == 0:
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
+                    'z_loss': loss_terms["z"],
                     'ppl': f"{math.exp(loss_value):.2f}",
                     'lr': f"{current_lr:.2e}",
                     'step': global_step[0]
@@ -226,6 +227,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             if rank == 0:
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
+                    'z_loss': loss_terms["z"],
                     'ppl': f"{math.exp(loss_value):.2f}",
                     'step': global_step[0]
                 })
@@ -398,13 +400,13 @@ def train_language_model_distributed(rank, world_size):
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 4
-    batch_size = 8 if torch.cuda.is_available() else 4
+    epochs = 3
+    batch_size = 32 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
-    base_lr = 2.5e-4
-    final_lr = 2.5e-5
-    warmup_pct = 0.025
+    base_lr = 3e-4
+    final_lr = 3e-5
+    warmup_pct = 0.05
 
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 
@@ -442,7 +444,7 @@ def train_language_model_distributed(rank, world_size):
         print("Pad Token:", tokenizer.decode([pad_token_id], False))
 
     vocab_size = tokenizer.get_vocab_size()
-    torch.set_float32_matmul_precision('high')
+
     entries_per_dataset = 2_000_000
 
     # Fix dataset creation - use same dataset for all ranks
@@ -462,9 +464,9 @@ def train_language_model_distributed(rank, world_size):
         pad_token_id=pad_token_id,
         sequence_length=seq_len,
         batch_size=batch_size,
-        prefetch_batches=256,  # reservoir
+        prefetch_batches=512,  # reservoir
         prefetch_chunk_batches=8,  # quick refills
-        tokenizer_batch_size=128,  # try 128/256/512
+        tokenizer_batch_size=256,  # try 128/256/512
         weighted_sampling=False,
         global_max_entries=None,
         seed=42,
@@ -504,7 +506,7 @@ def train_language_model_distributed(rank, world_size):
     wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        num_layers=2,
+        num_layers=3,
         d_model=d_model,
         dropout=dropout,
         max_seq_len=seq_len
@@ -522,7 +524,7 @@ def train_language_model_distributed(rank, world_size):
 
     if rank == 0:
         print("Creating model...")
-    dtype = torch.bfloat16
+    dtype = torch.float32
 
     wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,
@@ -531,7 +533,7 @@ def train_language_model_distributed(rank, world_size):
         transformer_num_heads=num_heads,
         transformer_heads_kv=num_heads,
         transformer_num_layers=num_layers,
-        transformer_d_ff_multi=3,
+        transformer_d_ff_multi=4,
         dropout=dropout
     ).to(device, dtype=dtype)
 

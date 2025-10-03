@@ -337,8 +337,8 @@ def get_logits_tensor(logits):
 def lm_total_loss(logits, targets, pad_token_id):
     ce = compute_language_modeling_loss(logits, targets, pad_token_id, label_smoothing=0.05)
     zl = z_loss(logits, coeff=1e-4)
-    ul = repetition_unlikelihood(logits, targets, pad_token_id, window=64, coeff=2e-2)
-    return ce + zl + ul, {"ce": ce.item(), "z": zl.item(), "ul": ul.item()}
+    #ul = repetition_unlikelihood(logits, targets, pad_token_id, window=64, coeff=2e-2)
+    return ce + zl, {"ce": ce.item(), "z": zl.item()}
 
 def compute_language_modeling_loss(logits, targets, pad_token_id, label_smoothing=0.05):
     # logits: (B, T, V), targets: (B, T)

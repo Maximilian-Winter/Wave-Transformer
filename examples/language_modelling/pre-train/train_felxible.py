@@ -330,48 +330,44 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
+    entries_per_dataset = 500_000 // world_size  # Each GPU gets its portion
 
-    # Load datasets
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 500_000, "weight": 0.5},
-        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en",
+         "skip": rank * entries_per_dataset,
+         "max_entries": entries_per_dataset,
+         "weight": 0.5},
+        {"name": "HuggingFaceFW/fineweb",
+         "skip": rank * entries_per_dataset,
+         "max_entries": entries_per_dataset,
+         "weight": 0.5},
     ]
 
-    # Create datasets with different seeds for each rank to ensure different data
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs, tokenizer, pad_token_id, seq_len,
         device=device,
-        seed=42 + rank,  # Different seed per GPU for different data
+        seed=42,  # Same seed for deterministic sampling within each partition
         preloaded_data=None
     )
-
     eval_dataset = BoundedStreamingDataset(
         "HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
-        max_entries=5000, skip_first=500_000 + rank * 5000,  # Different skip per GPU
+        max_entries=5000, skip_first=world_size * entries_per_dataset + rank * 5000,  # Different skip per GPU
         device=device,
         preloaded_data=None
     )
-
     if rank == 0:
         print("Datasets created...")
 
-    # Wrap datasets for distributed training if using multiple GPUs
-    if use_ddp:
-        distributed_train_dataset = DistributedIterableWrapper(train_dataset, rank, world_size)
-        distributed_eval_dataset = DistributedIterableWrapper(eval_dataset, rank, world_size)
-    else:
-        distributed_train_dataset = train_dataset
-        distributed_eval_dataset = eval_dataset
 
     # Create dataloaders WITHOUT samplers (they don't work with IterableDataset)
     train_loader = DataLoader(
-        distributed_train_dataset,
+        train_dataset,  # Direct use
         batch_size=batch_size,
         drop_last=True,
     )
 
     eval_loader = DataLoader(
-        distributed_eval_dataset,
+        eval_dataset,
         batch_size=eval_batch_size,
         drop_last=False,
     )
@@ -598,7 +594,7 @@ def main():
     torch.backends.cudnn.benchmark = False
 
     # Number of GPUs/processes to use
-    world_size = 1  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
+    world_size = 2  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
 
     if world_size == 1:
         # Single GPU/CPU mode - run directly without spawning

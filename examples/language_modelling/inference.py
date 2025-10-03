@@ -28,7 +28,7 @@ pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
 
 print("Pad Token ID:", pad_token_id)
 print("Pad Token:", tokenizer.decode([pad_token_id], False))
-#test_generation(model=model.to(device="cuda"), tokenizer=tokenizer, device="cuda", repetition_penalty=1.2)
+test_generation(model=model.to(device="cuda"), tokenizer=tokenizer, device="cuda", repetition_penalty=1.2)
 prompt = "All matter is composed of atoms"
 gen = generate_text(model=model.to(device="cuda"), prompt=prompt, temperature=0.6, top_k=0, top_p=0.9, min_p=0.025, repetition_penalty=1.12, tokenizer=tokenizer, device="cuda")
 print("Prompt:", prompt)

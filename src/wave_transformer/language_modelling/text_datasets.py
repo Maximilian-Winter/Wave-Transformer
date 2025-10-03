@@ -735,14 +735,17 @@ class MultiBoundedStreamingDataset(IterableDataset):
     def prepare(
             self,
             output_path: Union[str, Path],
-            num_workers: Optional[int] = None
+            num_workers: Optional[int] = None,
+            batch_size: int = 10000
     ):
         """
         Tokenize and save all datasets to a JSON file using parallel workers.
+        Process entries in batches to avoid memory issues and improve parallelization.
 
         Args:
             output_path: Path to save the prepared datasets
-            num_workers: Number of parallel workers (None = cpu_count(), 1 = no parallelization)
+            num_workers: Number of parallel workers (None = cpu_count())
+            batch_size: Number of entries to process in each batch
         """
         if self.preloaded_data is not None:
             raise ValueError("Cannot prepare an already loaded dataset")
@@ -754,6 +757,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.tokenizer.save(str(tokenizer_path))
 
         all_datasets = {}
+        workers = num_workers or cpu_count()
 
         for spec in self.dataset_specs:
             dataset_name = spec["name"]
@@ -779,39 +783,66 @@ class MultiBoundedStreamingDataset(IterableDataset):
             max_entries = spec["max_entries"]
             skip_first = spec.get("skip", 0)
 
-            print(f"Collecting entries from {dataset_name}...")
-            entries = []
-            for text in tqdm(text_iterator):
-                if len(entries) >= max_entries + skip_first:
-                    break
-                if isinstance(text, str) and text.strip():
-                    entries.append(text)
-                sleep(0.005)
+            dataset_data = []
+            entries_batch = []
+            total_collected = 0
 
-            print(f"Processing {len(entries)} entries with {num_workers or cpu_count()} workers...")
+            print(f"Processing {dataset_name} in batches of {batch_size}...")
 
-            if num_workers == 1:
-                # Single-threaded processing
-                args = (str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                        self.stride, self.text_column, entries)
-                dataset_data = self._process_entries(args)
-            else:
-                # Parallel processing
-                workers = num_workers or cpu_count()
-                chunk_size = len(entries) // workers + 1
-                chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
+            with Pool(workers) as pool:
+                pbar = tqdm(total=max_entries + skip_first, desc=f"Processing {dataset_name}")
 
-                args = [
-                    (str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                     self.stride, self.text_column, chunk)
-                    for chunk in chunks
-                ]
+                for text in text_iterator:
+                    if total_collected >= max_entries + skip_first:
+                        break
 
-                dataset_data = []
-                with Pool(workers) as pool:
-                    for chunk_results in tqdm(pool.imap(self._process_entries, args), total=len(chunks)):
-                        dataset_data.extend(chunk_results)
+                    if isinstance(text, str) and text.strip():
+                        entries_batch.append(text)
+                        total_collected += 1
+                        pbar.update(1)
 
+                        # Process batch when it reaches batch_size
+                        if len(entries_batch) >= batch_size:
+                            # Split batch among workers
+                            chunk_size = max(1, len(entries_batch) // workers)
+                            chunks = [entries_batch[i:i + chunk_size]
+                                      for i in range(0, len(entries_batch), chunk_size)]
+
+                            args = [
+                                (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                                 self.stride, self.text_column, chunk)
+                                for chunk in chunks
+                            ]
+
+                            # Process chunks in parallel
+                            for chunk_results in pool.imap_unordered(self._process_entries, args):
+                                dataset_data.extend(chunk_results)
+
+                            entries_batch = []
+
+                # Process remaining entries
+                if entries_batch:
+                    if workers == 1:
+                        args = (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                                self.stride, self.text_column, entries_batch)
+                        dataset_data.extend(self._process_entries(args))
+                    else:
+                        chunk_size = max(1, len(entries_batch) // workers)
+                        chunks = [entries_batch[i:i + chunk_size]
+                                  for i in range(0, len(entries_batch), chunk_size)]
+
+                        args = [
+                            (str(tokenizer_path), self.pad_token_id, self.sequence_length,
+                             self.stride, self.text_column, chunk)
+                            for chunk in chunks if chunk  # Only process non-empty chunks
+                        ]
+
+                        for chunk_results in pool.imap_unordered(self._process_entries, args):
+                            dataset_data.extend(chunk_results)
+
+                pbar.close()
+
+            # Apply skip and max_entries after tokenization
             if skip_first > 0:
                 dataset_data = dataset_data[skip_first:]
 

@@ -38,17 +38,16 @@ def prepare_dataset():
 
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
-    dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 1000_000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 500_000, "weight": 0.1},
-        {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 1500_000, "weight": 0.5},
-    ]
-    train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
-    train_dataset.prepare("prepared_datasets/train_dataset_prepared.json", 8)
+    #dataset_specs = [
+    #    {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 1000_000, "weight": 0.4},
+    #    {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 500_000, "weight": 0.1},
+    #    {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 1500_000, "weight": 0.5},
+    #]
+    #train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device)
+    #train_dataset.prepare("prepared_datasets/train_dataset_prepared.json", 8)
 
     eval_dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 1000_000, "max_entries": 4000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 500_000, "max_entries": 1000, "weight": 0.1},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 1000_000, "max_entries": 5000, "weight": 0.5},
         {"name": "HuggingFaceFW/fineweb", "skip": 1500_000, "max_entries": 5000, "weight": 0.5},
     ]
     eval_dataset = MultiBoundedStreamingDataset(eval_dataset_specs, tokenizer, pad_token_id, seq_len, device=device)

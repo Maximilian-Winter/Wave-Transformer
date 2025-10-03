@@ -199,20 +199,20 @@ def train_language_model():
         {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
         {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
     ]
-    with open("prepared_datasets/train_dataset_prepared.json", "r") as f:
-        prepared_datasets = json.load(f)
+    #with open("prepared_datasets/train_dataset_prepared.json", "r") as f:
+    #    prepared_datasets = json.load(f)
 
     train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device,
-                                                 preloaded_data=prepared_datasets)
-    with open("prepared_datasets/eval_dataset_prepared.json", "r") as f:
-        eval_dataset = json.load(f)
+                                                 preloaded_data=None)
+    #with open("prepared_datasets/eval_dataset_prepared.json", "r") as f:
+    #    eval_dataset = json.load(f)
     eval_dataset = BoundedStreamingDataset("HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
-                                           max_entries=5000, skip_first=500_000, device=device, preloaded_data=eval_dataset)
+                                           max_entries=5000, skip_first=500_000, device=device, preloaded_data=None)
     print("Prepared Datasets loaded...")
     train_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, drop_last=False)
     print("Datasets loaded...")
-    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=2, d_model=d_model,
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model,
                                       dropout=dropout, max_seq_len=seq_len)
 
     wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model,

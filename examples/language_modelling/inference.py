@@ -6,7 +6,7 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 model, _ = load_model_bundle(
     load_dir="pre-train/results",
     prefix="wave_transformer",
-    epoch=5,
+    epoch=7,
     map_location="cuda"
 )
 tokenizer = Tokenizer.from_file("pre-train/SmolLM2-135M-Instruct-Tokenizer.json")

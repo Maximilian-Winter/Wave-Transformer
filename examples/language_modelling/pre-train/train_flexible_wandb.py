@@ -194,7 +194,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                     'train/learning_rate': current_lr,
                     'train/global_step': global_step[0],
                     'train/epoch': epoch,
-                    **loss_terms
+                    'train/z_loss': loss_terms["z"],
                 }, step=global_step[0])
 
             # Save checkpoint
@@ -217,7 +217,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             if rank == 0:
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
-                    **loss_terms,
+                    'z_loss': loss_terms["z"],
                     'ppl': f"{math.exp(loss_value):.2f}",
                     'lr': f"{current_lr:.2e}",
                     'step': global_step[0]
@@ -227,7 +227,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             if rank == 0:
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
-                    **loss_terms,
+                    'z_loss': loss_terms["z"],
                     'ppl': f"{math.exp(loss_value):.2f}",
                     'step': global_step[0]
                 })

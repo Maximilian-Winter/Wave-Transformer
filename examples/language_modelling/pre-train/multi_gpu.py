@@ -266,13 +266,13 @@ def train_language_model_distributed(rank, world_size):
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 5
-    batch_size = 8  # Per GPU batch size (16 total across 2 GPUs)
+    epochs = 4
+    batch_size = 32  # Per GPU batch size (16 total across 2 GPUs)
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
     final_lr = 5e-5
-    warmup_pct = 0.25
+    warmup_pct = 0.025
 
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 

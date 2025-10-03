@@ -260,13 +260,13 @@ def train_language_model_distributed(rank, world_size):
     # Model Parameters
     seq_len = 512
     d_model = 512
-    num_layers = 32
+    num_layers = 48
     num_heads = 8
     dropout = 0.1
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 4
+    epochs = 5
     batch_size = 32  # Per GPU batch size (16 total across 2 GPUs)
     eval_batch_size = 1
     accumulation_steps = 1

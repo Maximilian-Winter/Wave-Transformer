@@ -122,145 +122,131 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Starting iteration over dataloader")
 
-    try:
-        for batch_idx, raw_batch in enumerate(progress):
-            batch_count += 1
+    for batch_idx, raw_batch in enumerate(progress):
+        batch_count += 1
 
-            # Log first batch reception
-            if batch_idx == 0:
+        # Log first batch reception
+        if batch_idx == 0:
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Got first batch (shape: {raw_batch['input_ids'].shape if 'input_ids' in raw_batch else 'unknown'})")
+
+        # Periodic detailed logging
+        if batch_idx % 50 == 0 and batch_idx > 0:
+            current_time = datetime.now()
+            time_elapsed = (current_time - last_log_time).total_seconds()
+            print(
+                f"[{current_time.strftime('%H:%M:%S')}] Rank {rank}: Processed {batch_idx} batches ({time_elapsed:.1f}s since last log)")
+            last_log_time = current_time
+
+        batch = {
+            'input_ids': raw_batch['input_ids'],
+            'attention_mask': raw_batch['attention_mask']
+        }
+
+        inputs, targets, input_mask = prepare_autoregressive_batch(batch, pad_token_id)
+
+        # Forward pass with error handling
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            logits = model({"token_ids": inputs}, attention_mask=input_mask)
+            loss = compute_language_modeling_loss(logits, targets, pad_token_id)
+
+        if not torch.isfinite(loss):
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
+        normalized_loss = loss / accumulation_steps
+
+        # Backward pass with error handling
+        normalized_loss.backward()
+
+        loss_value = loss.detach().item()
+        epoch_losses.append(loss_value)
+        accumulated_loss += loss_value
+
+        # Step after accumulation - FIXED CONDITION
+        should_step = ((batch_idx + 1) % accumulation_steps == 0)
+
+        if should_step:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+            # Step the scheduler AFTER optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+
+            accumulated_loss = 0
+
+            # Increment global step
+            global_step[0] += 1
+
+            # Get current learning rate AFTER scheduler step
+            current_lr = optimizer.param_groups[0]['lr']
+
+            # Debug learning rate
+            if batch_idx < 5 and rank == 0:
                 print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Got first batch (shape: {raw_batch['input_ids'].shape if 'input_ids' in raw_batch else 'unknown'})")
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Step {global_step[0]}, LR = {current_lr:.6f}")
 
-            # Periodic detailed logging
-            if batch_idx % 50 == 0 and batch_idx > 0:
-                current_time = datetime.now()
-                time_elapsed = (current_time - last_log_time).total_seconds()
-                print(
-                    f"[{current_time.strftime('%H:%M:%S')}] Rank {rank}: Processed {batch_idx} batches ({time_elapsed:.1f}s since last log)")
-                last_log_time = current_time
+            # Log to wandb (fixed modulo condition)
+            if rank == 0 and global_step[0] % 250 == 0 and use_wandb and wandb.run is not None:
+                wandb.log({
+                    'train/loss': loss_value,
+                    'train/perplexity': math.exp(loss_value),
+                    'train/learning_rate': current_lr,
+                    'train/global_step': global_step[0],
+                    'train/epoch': epoch
+                }, step=global_step[0])
 
-            batch = {
-                'input_ids': raw_batch['input_ids'],
-                'attention_mask': raw_batch['attention_mask']
-            }
-
-            inputs, targets, input_mask = prepare_autoregressive_batch(batch, pad_token_id)
-
-            # Forward pass with error handling
-            try:
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    logits = model({"token_ids": inputs}, attention_mask=input_mask)
-                    loss = compute_language_modeling_loss(logits, targets, pad_token_id)
-            except Exception as e:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR in forward pass at batch {batch_idx}: {e}")
-                raise
-
-            if not torch.isfinite(loss):
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
-                optimizer.zero_grad(set_to_none=True)
-                continue
-
-            normalized_loss = loss / accumulation_steps
-
-            # Backward pass with error handling
-            try:
-                normalized_loss.backward()
-            except Exception as e:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR in backward pass at batch {batch_idx}: {e}")
-                raise
-
-            loss_value = loss.detach().item()
-            epoch_losses.append(loss_value)
-            accumulated_loss += loss_value
-
-            # Step after accumulation - FIXED CONDITION
-            should_step = ((batch_idx + 1) % accumulation_steps == 0)
-
-            if should_step:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-
-                # Step the scheduler AFTER optimizer.step()
-                if scheduler is not None:
-                    scheduler.step()
-
-                accumulated_loss = 0
-
-                # Increment global step
-                global_step[0] += 1
-
-                # Get current learning rate AFTER scheduler step
-                current_lr = optimizer.param_groups[0]['lr']
-
-                # Debug learning rate
-                if batch_idx < 5 and rank == 0:
+            # Periodic synchronization with detailed logging
+            if use_ddp and batch_idx % 100 == 0 and batch_idx > 0:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Syncing at batch {batch_idx}")
+                try:
+                    dist.barrier()
                     print(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Step {global_step[0]}, LR = {current_lr:.6f}")
+                        f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Passed sync barrier at batch {batch_idx}")
+                except Exception as e:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR at sync barrier: {e}")
+                    raise
 
-                # Log to wandb (fixed modulo condition)
-                if rank == 0 and global_step[0] % 250 == 0 and use_wandb and wandb.run is not None:
-                    wandb.log({
-                        'train/loss': loss_value,
-                        'train/perplexity': math.exp(loss_value),
-                        'train/learning_rate': current_lr,
-                        'train/global_step': global_step[0],
-                        'train/epoch': epoch
-                    }, step=global_step[0])
+            # Save checkpoint
+            if rank == 0 and global_step[0] % 5000 == 0:
+                print(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Saving checkpoint at step {global_step[0]}")
+                model_to_save = model.module if use_ddp else model
+                save_model_bundle(
+                    model_to_save,
+                    result_dir,
+                    f"wave_transformer_step_{global_step[0]}",
+                    epoch=epoch + 1,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    global_step=global_step[0]
+                )
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
 
-                # Periodic synchronization with detailed logging
-                if use_ddp and batch_idx % 100 == 0 and batch_idx > 0:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Syncing at batch {batch_idx}")
-                    try:
-                        dist.barrier()
-                        print(
-                            f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Passed sync barrier at batch {batch_idx}")
-                    except Exception as e:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR at sync barrier: {e}")
-                        raise
+            # Update progress bar with current learning rate
+            if rank == 0:
+                progress.set_postfix({
+                    'loss': f"{loss_value:.4f}",
+                    'ppl': f"{math.exp(loss_value):.2f}",
+                    'lr': f"{current_lr:.2e}",
+                    'step': global_step[0]
+                })
+        else:
+            # Update progress bar without LR when not stepping
+            if rank == 0:
+                progress.set_postfix({
+                    'loss': f"{loss_value:.4f}",
+                    'ppl': f"{math.exp(loss_value):.2f}",
+                    'step': global_step[0]
+                })
 
-                # Save checkpoint
-                if rank == 0 and global_step[0] % 5000 == 0:
-                    print(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Saving checkpoint at step {global_step[0]}")
-                    model_to_save = model.module if use_ddp else model
-                    save_model_bundle(
-                        model_to_save,
-                        result_dir,
-                        f"wave_transformer_step_{global_step[0]}",
-                        epoch=epoch + 1,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        global_step=global_step[0]
-                    )
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
 
-                # Update progress bar with current learning rate
-                if rank == 0:
-                    progress.set_postfix({
-                        'loss': f"{loss_value:.4f}",
-                        'ppl': f"{math.exp(loss_value):.2f}",
-                        'lr': f"{current_lr:.2e}",
-                        'step': global_step[0]
-                    })
-            else:
-                # Update progress bar without LR when not stepping
-                if rank == 0:
-                    progress.set_postfix({
-                        'loss': f"{loss_value:.4f}",
-                        'ppl': f"{math.exp(loss_value):.2f}",
-                        'step': global_step[0]
-                    })
 
-    except StopIteration:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR in training loop: {e}")
-        raise
-
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Completed {batch_count} batches total")
 
     # Gather losses from all processes
@@ -271,13 +257,9 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         if use_ddp and dist.is_initialized():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Starting all_reduce for losses")
             avg_loss_tensor = torch.tensor(avg_loss).cuda(rank) if torch.cuda.is_available() else torch.tensor(avg_loss)
-            try:
-                dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss_tensor.item() / dist.get_world_size()
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Global avg loss = {avg_loss:.4f}")
-            except Exception as e:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR in all_reduce: {e}")
-                raise
+            dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
+            avg_loss = avg_loss_tensor.item() / dist.get_world_size()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Global avg loss = {avg_loss:.4f}")
     else:
         avg_loss = 0.0
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: WARNING - No losses recorded")
@@ -285,12 +267,8 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
     # Final synchronization before plotting
     if use_ddp:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Final epoch barrier")
-        try:
-            dist.barrier()
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Passed final barrier")
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR at final barrier: {e}")
-            raise
+        dist.barrier()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Passed final barrier")
 
     # Plot losses only on main process
     if rank == 0 and len(epoch_losses) > 0:
@@ -426,15 +404,15 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
+    seq_len = 1024
     d_model = 512
-    num_layers = 48
+    num_layers = 32
     num_heads = 8
     dropout = 0.1
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 2
+    epochs = 4
     batch_size = 32 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
@@ -445,7 +423,7 @@ def train_language_model_distributed(rank, world_size):
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 
     # Initialize wandb (only on rank 0)
-    use_wandb = False
+    use_wandb = True
     if rank == 0 and use_wandb:
         wandb.init(
             project="wave-transformer-training",
@@ -485,7 +463,7 @@ def train_language_model_distributed(rank, world_size):
     dataset_specs = [
         {"name": "wikimedia/wikipedia", "subset": "20231101.en",
          "skip": 0,  # Same for all ranks
-         "max_entries": 2_000_000,  # Total dataset size
+         "max_entries": entries_per_dataset,  # Total dataset size
          "weight": 1.0}
     ]
 
@@ -763,7 +741,7 @@ def main():
     torch.backends.cudnn.benchmark = False
 
     # Number of GPUs/processes to use
-    world_size = 4  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
+    world_size = 1  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
 
     if world_size == 1:
         # Single GPU/CPU mode - run directly without spawning

@@ -450,17 +450,19 @@ def train_language_model_distributed(rank, world_size):
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en",
-         "skip": 0,  # Same for all ranks
-         "max_entries": entries_per_dataset,  # Total dataset size
-         "weight": 1.0}
+        BoundedStreamingDataset(
+            repo_id="wikimedia/wikipedia",
+            subset="20231101.en",
+            skip_first=0,
+            max_entries=entries_per_dataset,
+            weight=1.0
+        ),
     ]
 
     train_dataset = MultiBoundedStreamingDataset(
-        dataset_specs, tokenizer, pad_token_id, seq_len,
+        dataset_specs, tokenizer, pad_token_id, sequence_length=seq_len, prefetch_batches=100,
         device=device,
-        seed=42,  # Same seed ensures deterministic shuffling
-        preloaded_data=None
+        seed=42
     )
 
     # Use wrapper for distribution

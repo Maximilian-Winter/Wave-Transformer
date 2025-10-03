@@ -179,298 +179,22 @@ class TextDatasetPadded(Dataset):
         }
 
 
-class BoundedStreamingDataset(IterableDataset):
-    """
-    Streaming dataset that tokenizes text on-the-fly and creates fixed-length sequences.
-
-    Key improvements:
-    - Uses a buffer to accumulate tokens and yield complete windows
-    - Properly handles stride for overlapping sequences
-    - Processes data incrementally without loading entire stream into memory
-    - Can be prepared (tokenized and saved) and loaded for faster iteration
-    """
-
-    def __init__(
-            self,
-            data_source: Union[str, HFIterableDataset],
-            tokenizer: Tokenizer,
-            pad_token_id: int,
-            sequence_length: int = 512,
-            stride: Optional[int] = None,
-            text_column: str = "text",
-            skip_first: int = 0,
-            max_entries: Optional[int] = None,
-            device: torch.device = torch.device("cpu"),
-            preloaded_data: Optional[List[Dict]] = None
-    ):
-        if sequence_length <= 0:
-            raise ValueError(f"sequence_length must be positive, got {sequence_length}")
-        if stride is not None and stride <= 0:
-            raise ValueError(f"stride must be positive, got {stride}")
-        if skip_first < 0:
-            raise ValueError(f"skip_first must be non-negative, got {skip_first}")
-        if max_entries is not None and max_entries <= 0:
-            raise ValueError(f"max_entries must be positive, got {max_entries}")
-
-        self.tokenizer = tokenizer
-        self.pad_token_id = pad_token_id
-        self.sequence_length = sequence_length
-        self.stride = stride or sequence_length
-        self.text_column = text_column
-        self.skip_first = skip_first
-        self.max_entries = max_entries
-        self.device = device
-        self.preloaded_data = preloaded_data
-
-        if preloaded_data is None:
-            if isinstance(data_source, str):
-                try:
-                    self.dataset = load_dataset(data_source, split="train", streaming=True).skip(skip_first)
-                except Exception as e:
-                    raise ValueError(f"Failed to load dataset '{data_source}': {e}")
-            else:
-                self.dataset = data_source
-        else:
-            self.dataset = None
-
-    def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
-        if self.preloaded_data is not None:
-            for item in self.preloaded_data:
-                yield {
-                    "input_ids": torch.tensor(item["input_ids"], dtype=torch.long, device=self.device),
-                    "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.bool, device=self.device)
-                }
-            return
-
-        buffer = []
-        entries_yielded = 0
-
-        try:
-            text_iterator = (sample[self.text_column] for sample in self.dataset)
-        except KeyError:
-            raise KeyError(f"Text column '{self.text_column}' not found in dataset")
-
-        for text in text_iterator:
-            if not isinstance(text, str) or not text.strip():
-                continue
-
-            try:
-                encoding = self.tokenizer.encode(text, add_special_tokens=False)
-                tokens = encoding.ids
-            except Exception as e:
-                print(f"Warning: Failed to tokenize text: {e}")
-                continue
-
-            buffer.extend(tokens)
-
-            while len(buffer) >= self.sequence_length:
-                sequence = buffer[:self.sequence_length]
-                buffer = buffer[self.stride:]
-
-                if self.max_entries and entries_yielded >= self.max_entries:
-                    return
-
-                padded_sequence, attention_mask = apply_padding(
-                    sequence,
-                    self.sequence_length,
-                    self.pad_token_id
-                )
-
-                yield {
-                    "input_ids": torch.tensor(padded_sequence, dtype=torch.long, device=self.device),
-                    "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
-                }
-
-                entries_yielded += 1
-
-        if buffer and (self.max_entries is None or entries_yielded < self.max_entries):
-                padded_sequence, attention_mask = apply_padding(
-                    buffer,
-                    self.sequence_length,
-                    self.pad_token_id
-                )
-
-                yield {
-                    "input_ids": torch.tensor(padded_sequence, dtype=torch.long, device=self.device),
-                    "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
-                }
-
-    def __len__(self) -> int:
-        return  self.max_entries
-    @staticmethod
-    def _process_entries(args):
-        """Worker function: load tokenizer, process entries, return tokenized samples."""
-        tokenizer_path, pad_token_id, sequence_length, stride, text_column, entries = args
-
-        tokenizer = Tokenizer.from_file(tokenizer_path)
-        results = []
-        buffer = []
-
-        for entry in entries:
-            text = entry.get(text_column) if isinstance(entry, dict) else entry
-
-            if not isinstance(text, str) or not text.strip():
-                continue
-
-            try:
-                tokens = tokenizer.encode(text, add_special_tokens=False).ids
-            except Exception:
-                continue
-
-            buffer.extend(tokens)
-
-            while len(buffer) >= sequence_length:
-                sequence = buffer[:sequence_length]
-                buffer = buffer[stride:]
-
-                padded_sequence, attention_mask = apply_padding(
-                    sequence,
-                    sequence_length,
-                    pad_token_id
-                )
-
-                results.append({
-                    "input_ids": padded_sequence,
-                    "attention_mask": attention_mask
-                })
-
-        if buffer:
-            padded_sequence, attention_mask = apply_padding(
-                buffer,
-                sequence_length,
-                pad_token_id
-            )
-            results.append({
-                "input_ids": padded_sequence,
-                "attention_mask": attention_mask
-            })
-
-        return results
-
-    def prepare(
-            self,
-            output_path: Union[str, Path],
-            num_workers: Optional[int] = None
-    ):
-        """
-        Tokenize and save the entire dataset to a JSON file using parallel workers.
-
-        Args:
-            output_path: Path to save the prepared dataset
-            num_workers: Number of parallel workers (None = cpu_count(), 1 = no parallelization)
-        """
-        if self.preloaded_data is not None:
-            raise ValueError("Cannot prepare an already loaded dataset")
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        tokenizer_path = output_path.parent / f"{output_path.stem}_tokenizer.json"
-        self.tokenizer.save(str(tokenizer_path))
-
-        try:
-            text_iterator = (sample[self.text_column] for sample in self.dataset)
-        except KeyError:
-            raise KeyError(f"Text column '{self.text_column}' not found in dataset")
-
-        # Collect all entries
-        print("Collecting entries...")
-        entries = []
-        for text in tqdm(text_iterator):
-            if self.max_entries and len(entries) >= self.max_entries:
-                break
-            if isinstance(text, str) and text.strip():
-                entries.append(text)
-
-        print(f"Processing {len(entries)} entries with {num_workers or cpu_count()} workers...")
-
-        if num_workers == 1:
-            # Single-threaded processing
-            args = (str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                    self.stride, self.text_column, entries)
-            all_data = self._process_entries(args)
-        else:
-            # Parallel processing
-            workers = num_workers or cpu_count()
-            chunk_size = len(entries) // workers + 1
-            chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
-
-            args = [
-                (str(tokenizer_path), self.pad_token_id, self.sequence_length,
-                 self.stride, self.text_column, chunk)
-                for chunk in chunks
-            ]
-
-            all_data = []
-            with Pool(workers) as pool:
-                for chunk_results in tqdm(pool.imap(self._process_entries, args), total=len(chunks)):
-                    all_data.extend(chunk_results)
-
-        tokenizer_path.unlink()
-
-
-        print(f"Saving {len(all_data)} examples to {output_path}...")
-        with open(output_path, 'w') as f:
-            json.dump(all_data, f)
-
-        print(f"Dataset prepared and saved to {output_path}")
-
-    @classmethod
-    def load(
-            cls,
-            input_path: Union[str, Path],
-            tokenizer: Tokenizer,
-            pad_token_id: int,
-            sequence_length: int = 512,
-            device: torch.device = torch.device("cpu")
-    ):
-        """
-        Load a prepared dataset from JSON file.
-
-        Args:
-            input_path: Path to the prepared dataset JSON file
-            tokenizer: Tokenizer instance (for consistency)
-            pad_token_id: Padding token ID
-            sequence_length: Sequence length (should match preparation)
-            device: Device to place tensors on
-
-        Returns:
-            BoundedStreamingDataset instance with preloaded data
-        """
-        input_path = Path(input_path)
-
-        if not input_path.exists():
-            raise FileNotFoundError(f"Prepared dataset not found at {input_path}")
-
-        print(f"Loading prepared dataset from {input_path}...")
-        with open(input_path, 'r') as f:
-            preloaded_data = json.load(f)
-
-        print(f"Loaded {len(preloaded_data)} examples")
-
-        return cls(
-            data_source="",
-            tokenizer=tokenizer,
-            pad_token_id=pad_token_id,
-            sequence_length=sequence_length,
-            device=device,
-            preloaded_data=preloaded_data
-        )
-
 @dataclasses.dataclass
 class BoundedStreamingDataset:
     repo_id: str
-    subset: str = None
+    subset: Optional[str] = None
     split: str = "train"
     skip_first: int = 0
     max_entries: int = None
-    max_length: int = 512
     text_column: str = "text"
-    current_entry_idx = 0
+    weight: float = 1.0  # Added for weighted sampling
+    current_idx: int = 0  # Track current position in dataset
+
 
 class MultiBoundedStreamingDataset(IterableDataset):
     """
-    Streams multiple datasets
+    Simplified streaming dataset that tokenizes text directly without buffering.
+    Supports batch processing for efficient data loading.
     """
 
     def __init__(
@@ -479,11 +203,12 @@ class MultiBoundedStreamingDataset(IterableDataset):
             tokenizer: Tokenizer,
             pad_token_id: int,
             sequence_length: int = 512,
-            text_column: str = "text",
+            batch_size: int = 32,
+            prefetch_batches: int = 100,
             device: torch.device = torch.device("cpu"),
-            batch_size: int = 128,
-            global_max_entries: int = None,
-            seed: int = None
+            global_max_entries: Optional[int] = None,
+            seed: Optional[int] = None,
+            weighted_sampling: bool = False
     ):
         super().__init__()
 
@@ -491,50 +216,318 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.tokenizer = tokenizer
         self.pad_token_id = pad_token_id
         self.sequence_length = sequence_length
-        self.text_column = text_column
-        self.device = device
         self.batch_size = batch_size
-        self.seed = seed
+        self.prefetch_batches = prefetch_batches  # Number of batches to fetch at once
+        self.device = device
         self.global_max_entries = global_max_entries
+        self.seed = seed
+        self.weighted_sampling = weighted_sampling
+        self.tokenizer.enable_padding(
+            pad_id=pad_token_id,
+            pad_token=tokenizer.decode([pad_token_id], False),  # This might need adjustment based on your tokenizer
+            length=sequence_length
+        )
+        self.tokenizer.enable_truncation(max_length=sequence_length)
 
-    def _create_dataset_iterator(self, repo_id: str, subset: str, split: str, entries: int, skip_entries: int):
-        """Create an iterator for a single dataset with its own buffer."""
 
-        ds = load_dataset(
-            repo_id,
-            subset,
-            split=split,
-            streaming=True
-        ).skip(skip_entries).take(entries)
+    def _create_dataset_iterator(self, spec: BoundedStreamingDataset, fetch_size: int):
+        """Create an iterator for a chunk of entries from a dataset."""
+        try:
+            ds = load_dataset(
+                spec.repo_id,
+                spec.subset,
+                split=spec.split,
+                streaming=True
+            )
 
-        return ds
+            # Calculate how many entries to skip (initial skip + already processed)
+            total_skip = spec.skip_first + spec.current_idx
+
+            # Apply skip to get to current position
+            if total_skip > 0:
+                ds = ds.skip(total_skip)
+
+            # Take only the requested chunk size
+            # Make sure we don't exceed max_entries if specified
+            if spec.max_entries is not None:
+                remaining = spec.max_entries - spec.current_idx
+                fetch_size = min(fetch_size, remaining)
+
+            if fetch_size > 0:
+                ds = ds.take(fetch_size)
+                return ds
+            else:
+                return None
+
+        except Exception as e:
+            print(f"Warning: Failed to load dataset {spec.repo_id}: {e}")
+            return None
+
+    def _tokenize_sample(self, text: str) -> Dict[str, torch.Tensor]:
+        """Tokenize a single text sample."""
+        if not isinstance(text, str) or not text.strip():
+            # Return empty sequence if text is invalid
+            return {
+                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
+                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
+            }
+
+        try:
+            # Tokenize with padding and truncation
+            encoding = self.tokenizer.encode(text, add_special_tokens=False)
+
+            # Get the padded/truncated ids
+            input_ids = encoding.ids
+
+            # Create attention mask (1 for real tokens, 0 for padding)
+            attention_mask = encoding.attention_mask
+
+            return {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
+                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0),
+            }
+        except Exception as e:
+            print(f"Warning: Failed to tokenize text: {e}")
+            # Return padded sequence on error
+            return {
+                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
+                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
+            }
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
-        # Simply uses entries directly, pad and truncate the results.
         if self.seed is not None:
             random.seed(self.seed)
 
-        active_iterators = []
-
+        # Reset current indices
         for spec in self.dataset_specs:
-            dataset_name = spec.repo_id
-            subset = spec.subset
-            dataset_split = spec.split
-            iterator = self._create_dataset_iterator(dataset_name, subset, dataset_split, spec.max_entries, spec.skip_first)
-            active_iterators.append(iterator)
-
-
-        if not active_iterators:
-            raise RuntimeError("No datasets could be loaded successfully")
+            spec.current_idx = 0
 
         global_yielded = 0
+        fetch_size = self.batch_size * self.prefetch_batches
 
-        for iterator in active_iterators:
-            for sample in iterator:
+        if self.weighted_sampling and len(self.dataset_specs) > 1:
+            # Weighted sampling with chunked fetching
+            while True:
+                if self.global_max_entries and global_yielded >= self.global_max_entries:
+                    break
 
+                # Check which datasets still have data
+                active_specs = []
+                for spec in self.dataset_specs:
+                    if spec.max_entries is None or spec.current_idx < spec.max_entries:
+                        active_specs.append(spec)
 
+                if not active_specs:
+                    break
+
+                # Collect samples from all active datasets based on weights
+                batch_buffer = []
+                samples_needed = min(
+                    fetch_size,
+                    (self.global_max_entries - global_yielded) if self.global_max_entries else fetch_size
+                )
+
+                # Calculate how many samples to take from each dataset based on weights
+                total_weight = sum(spec.weight for spec in active_specs)
+                samples_per_dataset = {}
+                remaining_samples = samples_needed
+
+                for spec in active_specs[:-1]:  # All but last
+                    proportion = spec.weight / total_weight
+                    samples = min(
+                        int(samples_needed * proportion),
+                        remaining_samples,
+                        spec.max_entries - spec.current_idx if spec.max_entries else remaining_samples
+                    )
+                    samples_per_dataset[spec.repo_id] = samples
+                    remaining_samples -= samples
+
+                # Give remaining samples to last dataset
+                if active_specs:
+                    last_spec = active_specs[-1]
+                    samples_per_dataset[last_spec.repo_id] = min(
+                        remaining_samples,
+                        last_spec.max_entries - last_spec.current_idx if last_spec.max_entries else remaining_samples
+                    )
+
+                # Fetch and process samples from each dataset
+                all_samples = []
+                for spec in active_specs:
+                    samples_to_fetch = samples_per_dataset.get(spec.repo_id, 0)
+                    if samples_to_fetch > 0:
+                        ds = self._create_dataset_iterator(spec, samples_to_fetch)
+                        if ds is not None:
+                            for sample in ds:
+                                text = sample.get(spec.text_column, "")
+                                tokenized = self._tokenize_sample(text)
+                                all_samples.append((spec.weight, tokenized))
+                                spec.current_idx += 1
+
+                # Shuffle samples based on weights
+                if all_samples:
+                    random.shuffle(all_samples)
+                    batch_buffer = [sample for _, sample in all_samples]
+
+                # Yield batches from buffer
+                while len(batch_buffer) >= self.batch_size:
+                    batch = self._create_batch(batch_buffer[:self.batch_size])
+                    yield batch
+                    batch_buffer = batch_buffer[self.batch_size:]
+                    global_yielded += self.batch_size
+
+                    if self.global_max_entries and global_yielded >= self.global_max_entries:
+                        return
+
+                # Handle remaining samples
+                if batch_buffer and not active_specs:  # No more data available
+                    batch = self._create_batch(batch_buffer)
+                    yield batch
+                    return
+
+        else:
+            # Sequential processing with chunked fetching
+            for spec in self.dataset_specs:
+                while spec.max_entries is None or spec.current_idx < spec.max_entries:
+                    if self.global_max_entries and global_yielded >= self.global_max_entries:
+                        return
+
+                    # Calculate how many samples to fetch
+                    samples_to_fetch = fetch_size
+                    if spec.max_entries is not None:
+                        remaining_in_dataset = spec.max_entries - spec.current_idx
+                        samples_to_fetch = min(fetch_size, remaining_in_dataset)
+                    if self.global_max_entries:
+                        remaining_global = self.global_max_entries - global_yielded
+                        samples_to_fetch = min(samples_to_fetch, remaining_global)
+
+                    if samples_to_fetch <= 0:
+                        break
+
+                    # Fetch the next chunk
+                    ds = self._create_dataset_iterator(spec, samples_to_fetch)
+                    if ds is None:
+                        break
+
+                    batch_buffer = []
+                    for sample in ds:
+                        text = sample.get(spec.text_column, "")
+                        tokenized = self._tokenize_sample(text)
+                        batch_buffer.append(tokenized)
+                        spec.current_idx += 1
+
+                        # Yield complete batches
+                        if len(batch_buffer) >= self.batch_size:
+                            batch = self._create_batch(batch_buffer[:self.batch_size])
+                            yield batch
+                            batch_buffer = batch_buffer[self.batch_size:]
+                            global_yielded += self.batch_size
+
+                            if self.global_max_entries and global_yielded >= self.global_max_entries:
+                                # Yield any remaining samples before returning
+                                if batch_buffer:
+                                    batch = self._create_batch(batch_buffer)
+                                    yield batch
+                                return
+
+                    # Yield remaining samples from this chunk
+                    if batch_buffer:
+                        # Only yield if we're done with this dataset or global limit reached
+                        if (spec.max_entries and spec.current_idx >= spec.max_entries) or \
+                                (self.global_max_entries and global_yielded + len(batch_buffer) >= self.global_max_entries):
+                            batch = self._create_batch(batch_buffer)
+                            yield batch
+                            global_yielded += len(batch_buffer)
+                            if self.global_max_entries and global_yielded >= self.global_max_entries:
+                                return
+
+    def _create_batch(self, samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        """Stack individual samples into a batch."""
+        if not samples:
+            return {
+                "input_ids": torch.empty(0, self.sequence_length, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
+                "attention_mask": torch.empty(0, self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
+            }
+
+        return {
+            "input_ids": torch.stack([s["input_ids"] for s in samples]),
+            "attention_mask": torch.stack([s["attention_mask"] for s in samples])
+        }
 
     def __len__(self) -> int:
-        if self.global_max_entries:
-            return self.global_max_entries
-        return sum(spec["max_entries"] for spec in self.dataset_specs)
+        total_samples = self.global_max_entries if self.global_max_entries else \
+            sum(spec.max_entries for spec in self.dataset_specs if spec.max_entries is not None)
+        return total_samples // self.batch_size  # Return number of batches, not samples
+
+
+# Example usage
+if __name__ == "__main__":
+    from tokenizers import Tokenizer
+
+    # Example setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Create dataset specifications
+    dataset_specs = [
+        BoundedStreamingDataset(
+            repo_id="wikimedia/wikipedia",
+            subset="20231101.en",
+            skip_first=0,
+            max_entries=10000,
+            weight=0.4
+        ),
+        BoundedStreamingDataset(
+            repo_id="roneneldan/TinyStories",
+            skip_first=0,
+            max_entries=5000,
+            weight=0.1
+        ),
+        BoundedStreamingDataset(
+            repo_id="HuggingFaceFW/fineweb",
+            skip_first=0,
+            max_entries=15000,
+            weight=0.5
+        ),
+    ]
+
+    # Load tokenizer (example - replace with your actual tokenizer)
+    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
+    tokenizer = Tokenizer.from_pretrained(model_name)
+    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
+
+    # Create dataset with sequential processing
+    dataset_sequential = MultiBoundedStreamingDataset(
+        dataset_specs=dataset_specs,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=512,
+        device=device,
+        global_max_entries=100,
+        weighted_sampling=False  # Sequential processing
+    )
+
+    # Create dataset with weighted sampling
+    dataset_weighted = MultiBoundedStreamingDataset(
+        dataset_specs=dataset_specs,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=512,
+        device=device,
+        global_max_entries=100,
+        weighted_sampling=True,  # Weighted sampling
+        seed=42
+    )
+
+    # Test iteration
+    print("Testing sequential dataset:")
+    for i, batch in enumerate(dataset_sequential):
+        if i >= 5:
+            break
+        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}, "
+              f"attention_mask shape = {batch['attention_mask'].shape}")
+
+    print("\nTesting weighted sampling dataset:")
+    for i, batch in enumerate(dataset_weighted):
+        if i >= 5:
+            break
+        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}, "
+              f"attention_mask shape = {batch['attention_mask'].shape}")

@@ -224,7 +224,7 @@ class BoundedStreamingDataset(IterableDataset):
         if preloaded_data is None:
             if isinstance(data_source, str):
                 try:
-                    self.dataset = load_dataset(data_source, split="train", streaming=True)
+                    self.dataset = load_dataset(data_source, split="train", streaming=True).skip(skip_first)
                 except Exception as e:
                     raise ValueError(f"Failed to load dataset '{data_source}': {e}")
             else:
@@ -242,7 +242,6 @@ class BoundedStreamingDataset(IterableDataset):
             return
 
         buffer = []
-        entries_skipped = 0
         entries_yielded = 0
 
         try:
@@ -267,10 +266,6 @@ class BoundedStreamingDataset(IterableDataset):
                 sequence = buffer[:self.sequence_length]
                 buffer = buffer[self.stride:]
 
-                if entries_skipped < self.skip_first:
-                    entries_skipped += 1
-                    continue
-
                 if self.max_entries and entries_yielded >= self.max_entries:
                     return
 
@@ -288,7 +283,6 @@ class BoundedStreamingDataset(IterableDataset):
                 entries_yielded += 1
 
         if buffer and (self.max_entries is None or entries_yielded < self.max_entries):
-            if entries_skipped >= self.skip_first:
                 padded_sequence, attention_mask = apply_padding(
                     buffer,
                     self.sequence_length,
@@ -413,8 +407,6 @@ class BoundedStreamingDataset(IterableDataset):
 
         tokenizer_path.unlink()
 
-        if self.skip_first > 0:
-            all_data = all_data[self.skip_first:]
 
         print(f"Saving {len(all_data)} examples to {output_path}...")
         with open(output_path, 'w') as f:
@@ -530,12 +522,13 @@ class MultiBoundedStreamingDataset(IterableDataset):
     def _create_dataset_iterator(self, spec: Dict):
         """Create an iterator for a single dataset with its own buffer."""
         try:
+            skip_first = spec.get("skip", 0)
             ds = load_dataset(
                 spec["name"],
                 spec.get("subset", None),
                 split="train",
-                streaming=True,
-            )
+                streaming=True
+            ).skip(skip_first)
         except Exception as e:
             print(f"Warning: Failed to load dataset {spec['name']}: {e}")
             return None
@@ -549,7 +542,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
         buffer = []
         entries_skipped = 0
         entries_yielded = 0
-        skip_first = spec.get("skip", 0)
+
         max_entries = spec["max_entries"]
 
         def generate():
@@ -572,9 +565,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     sequence = buffer[:self.sequence_length]
                     buffer = buffer[self.stride:]
 
-                    if entries_skipped < skip_first:
-                        entries_skipped += 1
-                        continue
 
                     if entries_yielded >= max_entries:
                         return
@@ -592,7 +582,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
 
                     entries_yielded += 1
 
-            if buffer and entries_yielded < max_entries and entries_skipped >= skip_first:
+            if buffer and entries_yielded < max_entries:
                 padded_sequence, attention_mask = apply_padding(
                     buffer,
                     self.sequence_length,
@@ -766,12 +756,13 @@ class MultiBoundedStreamingDataset(IterableDataset):
             print(f"\nProcessing dataset: {dataset_name}")
 
             try:
+                skip_first = spec.get("skip", 0)
                 ds = load_dataset(
                     spec["name"],
                     spec.get("subset", None),
                     split="train",
                     streaming=True,
-                )
+                ).skip(skip_first)
             except Exception as e:
                 print(f"Warning: Failed to load dataset {dataset_name}: {e}")
                 continue
@@ -792,10 +783,10 @@ class MultiBoundedStreamingDataset(IterableDataset):
             print(f"Processing {dataset_name} in batches of {batch_size}...")
 
             with Pool(workers) as pool:
-                pbar = tqdm(total=max_entries + skip_first, desc=f"Processing {dataset_name}")
+                pbar = tqdm(total=max_entries, desc=f"Processing {dataset_name}")
 
                 for text in text_iterator:
-                    if total_collected >= max_entries + skip_first:
+                    if total_collected >= max_entries:
                         break
 
                     if isinstance(text, str) and text.strip():
@@ -843,10 +834,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
                             dataset_data.extend(chunk_results)
 
                 pbar.close()
-
-            # Apply skip and max_entries after tokenization
-            if skip_first > 0:
-                dataset_data = dataset_data[skip_first:]
 
             if len(dataset_data) > max_entries:
                 dataset_data = dataset_data[:max_entries]

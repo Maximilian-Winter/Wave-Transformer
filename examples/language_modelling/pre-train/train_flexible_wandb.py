@@ -54,7 +54,7 @@ def setup(rank, world_size):
         raise RuntimeError("No distributed backend available. Install NCCL or ensure Gloo is available.")
 
     # Initialize the process group
-    dist.init_process_group(backend, rank=rank, world_size=world_size)
+    dist.init_process_group(backend, rank=rank, world_size=world_size, device_id=rank)
 
     if rank == 0:
         print(f"Using distributed backend: {backend}")
@@ -199,17 +199,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                     'train/global_step': global_step[0],
                     'train/epoch': epoch
                 }, step=global_step[0])
-
-            # Periodic synchronization with detailed logging
-            if use_ddp and batch_idx % 100 == 0 and batch_idx > 0:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Syncing at batch {batch_idx}")
-                try:
-                    dist.barrier()
-                    print(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Passed sync barrier at batch {batch_idx}")
-                except Exception as e:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: ERROR at sync barrier: {e}")
-                    raise
 
             # Save checkpoint
             if rank == 0 and global_step[0] % 5000 == 0:
@@ -457,41 +446,31 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
-    entries_per_dataset = 2_000_000
+    entries_per_dataset = 2_000_000 // world_size
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
         {"name": "wikimedia/wikipedia", "subset": "20231101.en",
-         "skip": 0,  # Same for all ranks
-         "max_entries": entries_per_dataset,  # Total dataset size
+         "skip": entries_per_dataset * rank,
+         "max_entries": entries_per_dataset,
          "weight": 1.0}
     ]
 
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs, tokenizer, pad_token_id, seq_len,
         device=device,
-        seed=42,  # Same seed ensures deterministic shuffling
+        seed=42 ,  # Same seed ensures deterministic shuffling
         preloaded_data=None
     )
 
     # Use wrapper for distribution
-    if use_ddp:
-        train_dataset_wrapped = DistributedIterableWrapper(
-            train_dataset, rank, world_size
-        )
-        train_loader = DataLoader(
-            train_dataset_wrapped,
-            batch_size=batch_size,
-            drop_last=True,
-            num_workers=0
-        )
-    else:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            drop_last=True,
-            num_workers=0
-        )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        drop_last=True,
+        num_workers=0
+    )
+
 
     if rank == 0:
         print("Dataloaders created...")
@@ -741,7 +720,7 @@ def main():
     torch.backends.cudnn.benchmark = False
 
     # Number of GPUs/processes to use
-    world_size = 1  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
+    world_size = 2  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
 
     if world_size == 1:
         # Single GPU/CPU mode - run directly without spawning

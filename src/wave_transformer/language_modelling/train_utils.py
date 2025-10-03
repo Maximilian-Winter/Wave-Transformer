@@ -191,7 +191,8 @@ def save_model_bundle(
         prefix: str = "model",
         epoch: Optional[int] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        global_step: Optional[int] = None
 ):
     """
     Save model, encoder, decoder, and optional training state.
@@ -208,7 +209,9 @@ def save_model_bundle(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Build filename suffix
-    suffix = f"_epoch_{epoch}" if epoch is not None else ""
+    if global_step is None:
+        global_step = 0
+    suffix = f"global_step_{global_step}_epoch_{epoch}" if epoch is not None else ""
 
     # Save encoder, decoder, and model
     model.wave_encoder.save(save_dir / f"{prefix}_encoder{suffix}.pt")

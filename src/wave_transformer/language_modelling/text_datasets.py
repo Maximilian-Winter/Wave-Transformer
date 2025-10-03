@@ -1,3 +1,4 @@
+import dataclasses
 import random
 from time import sleep
 
@@ -456,6 +457,15 @@ class BoundedStreamingDataset(IterableDataset):
             preloaded_data=preloaded_data
         )
 
+@dataclasses.dataclass
+class BoundedStreamingDataset:
+    repo_id: str
+    subset: str = None
+    skip_first: int = 0
+    max_entries: int = None
+    max_length: int = 512
+    text_column: str = "text"
+    current_entry_idx = 0
 
 class MultiBoundedStreamingDataset(IterableDataset):
     """
@@ -470,69 +480,35 @@ class MultiBoundedStreamingDataset(IterableDataset):
 
     def __init__(
             self,
-            dataset_specs: List[Dict],
+            dataset_specs: List[BoundedStreamingDataset],
             tokenizer: Tokenizer,
             pad_token_id: int,
             sequence_length: int = 512,
-            stride: Optional[int] = None,
             text_column: str = "text",
             device: torch.device = torch.device("cpu"),
-            global_max_entries: Optional[int] = None,
-            seed: Optional[int] = None,
-            preloaded_data: Optional[Dict[str, List[Dict]]] = None
+            batch_size: int = 128
     ):
         super().__init__()
-
-        if not dataset_specs:
-            raise ValueError("dataset_specs cannot be empty")
-        if sequence_length <= 0:
-            raise ValueError(f"sequence_length must be positive, got {sequence_length}")
-        if stride is not None and stride <= 0:
-            raise ValueError(f"stride must be positive, got {stride}")
-        if global_max_entries is not None and global_max_entries <= 0:
-            raise ValueError(f"global_max_entries must be positive, got {global_max_entries}")
 
         self.dataset_specs = dataset_specs
         self.tokenizer = tokenizer
         self.pad_token_id = pad_token_id
         self.sequence_length = sequence_length
-        self.stride = stride or sequence_length
         self.text_column = text_column
         self.device = device
-        self.global_max_entries = global_max_entries
-        self.seed = seed
-        self.preloaded_data = preloaded_data
+        self.batch_size = batch_size
 
-        if preloaded_data is None:
-            for i, spec in enumerate(dataset_specs):
-                if "name" not in spec:
-                    raise ValueError(f"Dataset spec {i} missing required 'name' field")
-                if not spec.get("max_entries"):
-                    raise ValueError(
-                        f"Dataset {spec['name']} must define max_entries "
-                        "to avoid infinite iteration in streaming mode."
-                    )
-                if spec["max_entries"] <= 0:
-                    raise ValueError(f"Dataset {spec['name']} max_entries must be positive")
-                if spec.get("skip", 0) < 0:
-                    raise ValueError(f"Dataset {spec['name']} skip must be non-negative")
-                if spec.get("weight", 1.0) <= 0:
-                    raise ValueError(f"Dataset {spec['name']} weight must be positive")
 
-    def _create_dataset_iterator(self, spec: Dict):
+    def _create_dataset_iterator(self, repo_id: str, subset: str, split: str):
         """Create an iterator for a single dataset with its own buffer."""
-        try:
-            skip_first = spec.get("skip", 0)
-            ds = load_dataset(
-                spec["name"],
-                spec.get("subset", None),
-                split="train",
-                streaming=True
-            ).skip(skip_first)
-        except Exception as e:
-            print(f"Warning: Failed to load dataset {spec['name']}: {e}")
-            return None
-
+        skip_first = spec.get("skip", 0)
+        max_entries = spec.get("max_entries", 0)
+        ds = load_dataset(
+            spec["name"],
+            spec.get("subset", None),
+            split="train",
+            streaming=True
+        ).skip(skip_first).take(max_entries)
         try:
             text_iterator = (sample[self.text_column] for sample in ds)
         except KeyError:
@@ -553,6 +529,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     continue
 
                 try:
+
                     encoding = self.tokenizer.encode(text, add_special_tokens=False)
                     tokens = encoding.ids
                 except Exception as e:
@@ -625,7 +602,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
             for dataset_name, idx in sampled_indices:
                 item = self.preloaded_data[dataset_name][idx]
                 yield {
-                    "input_ids": torch.tensor(item["input_ids"], dtype=torch.long, device=self.device),
+                    "input_ids": torch.tensor(item["input_ids"], dtype=torch.long, device=self.device, ),
                     "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.bool, device=self.device)
                 }
             return

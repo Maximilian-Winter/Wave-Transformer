@@ -54,7 +54,7 @@ def setup(rank, world_size):
         raise RuntimeError("No distributed backend available. Install NCCL or ensure Gloo is available.")
 
     # Initialize the process group
-    dist.init_process_group(backend, rank=rank, world_size=world_size, device_id=rank)
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
 
     if rank == 0:
         print(f"Using distributed backend: {backend}")
@@ -446,31 +446,41 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
-    entries_per_dataset = 2_000_000 // world_size
+    entries_per_dataset = 2_000_000
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
         {"name": "wikimedia/wikipedia", "subset": "20231101.en",
-         "skip": entries_per_dataset * rank,
-         "max_entries": entries_per_dataset,
+         "skip": 0,  # Same for all ranks
+         "max_entries": entries_per_dataset,  # Total dataset size
          "weight": 1.0}
     ]
 
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs, tokenizer, pad_token_id, seq_len,
         device=device,
-        seed=42 ,  # Same seed ensures deterministic shuffling
+        seed=42,  # Same seed ensures deterministic shuffling
         preloaded_data=None
     )
 
     # Use wrapper for distribution
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        drop_last=True,
-        num_workers=0
-    )
-
+    if use_ddp:
+        train_dataset_wrapped = DistributedIterableWrapper(
+            train_dataset, rank, world_size
+        )
+        train_loader = DataLoader(
+            train_dataset_wrapped,
+            batch_size=batch_size,
+            drop_last=True,
+            num_workers=0
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            drop_last=True,
+            num_workers=0
+        )
 
     if rank == 0:
         print("Dataloaders created...")
@@ -497,9 +507,8 @@ def train_language_model_distributed(rank, world_size):
 
     if rank == 0:
         print("Creating model...")
+    dtype = torch.float32
 
-    # Create model and move to device
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,
         wave_decoder=wave_decoder,
@@ -540,7 +549,8 @@ def train_language_model_distributed(rank, world_size):
     )
 
     # Create scheduler
-    steps_per_epoch = entries_per_dataset // (batch_size * accumulation_steps)
+    entries_per_rank = entries_per_dataset // world_size
+    steps_per_epoch = entries_per_rank // (batch_size * accumulation_steps)
     total_steps = epochs * steps_per_epoch
     warmup_steps = max(1, int(warmup_pct * total_steps))
 
@@ -716,8 +726,10 @@ def main():
     torch.manual_seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(42)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
     # Number of GPUs/processes to use
     world_size = 2  # Set to 1 for single GPU/CPU, 2+ for multi-GPU

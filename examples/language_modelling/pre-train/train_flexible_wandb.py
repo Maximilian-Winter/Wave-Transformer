@@ -389,7 +389,7 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
+    seq_len = 1024
     d_model = 512
     num_layers = 32
     num_heads = 8
@@ -442,7 +442,7 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = tokenizer.get_vocab_size()
 
-    entries_per_dataset = 2_0000
+    entries_per_dataset = 2_000_000
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
@@ -461,9 +461,9 @@ def train_language_model_distributed(rank, world_size):
         pad_token_id=pad_token_id,
         sequence_length=seq_len,
         batch_size=batch_size,
-        prefetch_batches=256,  # reservoir
+        prefetch_batches=512,  # reservoir
         prefetch_chunk_batches=8,  # quick refills
-        tokenizer_batch_size=128,  # try 128/256/512
+        tokenizer_batch_size=256,  # try 128/256/512
         weighted_sampling=False,
         global_max_entries=None,
         seed=42,

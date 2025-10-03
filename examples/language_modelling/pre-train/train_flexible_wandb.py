@@ -204,11 +204,8 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 model_to_save = model.module if use_ddp else model
                 save_model_bundle(
                     model_to_save,
-                    result_dir,
-                    f"wave_transformer_step_{global_step[0]}",
-                    epoch=epoch + 1,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
+                    f"{result_dir}/epoch_{epoch}_batch_{batch_idx}",
+                    epoch,
                     global_step=global_step[0]
                 )
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
@@ -401,7 +398,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 3
-    batch_size = 32 if torch.cuda.is_available() else 4
+    batch_size = 16 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -445,7 +442,7 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = tokenizer.get_vocab_size()
 
-    entries_per_dataset = 2_000_000
+    entries_per_dataset = 2_0000
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
@@ -464,9 +461,9 @@ def train_language_model_distributed(rank, world_size):
         pad_token_id=pad_token_id,
         sequence_length=seq_len,
         batch_size=batch_size,
-        prefetch_batches=512,  # reservoir
+        prefetch_batches=256,  # reservoir
         prefetch_chunk_batches=8,  # quick refills
-        tokenizer_batch_size=256,  # try 128/256/512
+        tokenizer_batch_size=128,  # try 128/256/512
         weighted_sampling=False,
         global_max_entries=None,
         seed=42,
@@ -506,7 +503,7 @@ def train_language_model_distributed(rank, world_size):
     wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        num_layers=3,
+        num_layers=4,
         d_model=d_model,
         dropout=dropout,
         max_seq_len=seq_len
@@ -531,7 +528,7 @@ def train_language_model_distributed(rank, world_size):
         wave_decoder=wave_decoder,
         num_harmonics=num_harmonics,
         transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads,
+        transformer_heads_kv=num_heads // 2,
         transformer_num_layers=num_layers,
         transformer_d_ff_multi=4,
         dropout=dropout
@@ -697,9 +694,8 @@ def train_language_model_distributed(rank, world_size):
 
             save_model_bundle(
                 model_for_gen,
-                result_dir,
-                "wave_transformer",
-                epoch=epoch + 1,
+                f"{result_dir}/epoch_{epoch}_final",
+                (entries_per_dataset // batch_size * (epoch + 1)),
                 optimizer=optimizer,
                 scheduler=scheduler
             )

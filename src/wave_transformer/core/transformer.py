@@ -213,7 +213,7 @@ def plot_wave_series(waves: List[Wave], duration: float = 1.0,
 
 class FlashAttention(nn.Module):
     """
-    Attention using Flash Attention
+    Attention using Flash Attention with attention mask support
     """
 
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, use_flash: bool = True):
@@ -229,39 +229,72 @@ class FlashAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.dropout_p = dropout
 
-
-    def forward(self, x: torch.Tensor, causal: bool = True) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            causal: bool = True,
+            attention_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor [B, N, C]
+            causal: Whether to apply causal masking
+            attention_mask: Optional mask [B, N] or [B, N, N]
+                - True/1 = attend, False/0 = mask out
+        """
         B, N, C = x.shape
 
         # Compute QKV
         qkv = self.qkv(x).reshape(B, N, 3, self.n_heads, self.d_head)
 
         if self.use_flash:
-            return self._flash_attention(qkv, causal)
+            return self._flash_attention(qkv, causal, attention_mask)
         else:
-            return self._pytorch_attention(qkv, causal)
+            return self._pytorch_attention(qkv, causal, attention_mask)
 
-    def _flash_attention(self, qkv: torch.Tensor, causal: bool) -> torch.Tensor:
-        """Use Flash Attention with block-sparse pattern"""
+    def _flash_attention(
+            self,
+            qkv: torch.Tensor,
+            causal: bool,
+            attention_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Use Flash Attention with optional attention mask"""
         B, N, _, H, D = qkv.shape
 
         # Flash attention expects [B, N, H, D] for q, k, v
         q, k, v = qkv.unbind(2)
 
-        # Flash attention with causal mask
+        # Prepare attention mask for flash attention
+        # Flash attention expects mask in [B, H, N, N] format with True=attend
+        flash_mask = None
+        if attention_mask is not None:
+            if attention_mask.dim() == 2:  # [B, N] - expand to [B, 1, 1, N]
+                flash_mask = attention_mask[:, None, None, :].expand(B, 1, N, N)
+            elif attention_mask.dim() == 3:  # [B, N, N] - expand to [B, 1, N, N]
+                flash_mask = attention_mask[:, None, :, :]
+            else:
+                flash_mask = attention_mask
+
+        # Flash attention with causal mask and/or custom mask
         out = flash_attn_func(
             q.half(), k.half(), v.half(),
             dropout_p=self.dropout_p if self.training else 0.0,
             softmax_scale=self.scale,
-            causal=causal
+            causal=causal,
+            attn_mask=flash_mask
         )
 
         # Convert back to original dtype and project
         out = out.to(qkv.dtype).reshape(B, N, -1)
         return self.out_proj(out)
 
-    def _pytorch_attention(self, qkv: torch.Tensor, causal: bool) -> torch.Tensor:
-        """Fallback to PyTorch implementation (less efficient)"""
+    def _pytorch_attention(
+            self,
+            qkv: torch.Tensor,
+            causal: bool,
+            attention_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Fallback to PyTorch implementation with attention mask support"""
         B, N, _, H, D = qkv.shape
 
         q, k, v = qkv.unbind(2)
@@ -271,10 +304,31 @@ class FlashAttention(nn.Module):
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
-        # Apply causal mask only if causal=True
+        # Build combined mask
+        mask = None
+
+        # Apply causal mask
         if causal:
             causal_mask = torch.triu(torch.ones(N, N, device=q.device), diagonal=1).bool()
-            scores.masked_fill_(causal_mask, float('-inf'))
+            mask = causal_mask
+
+        # Apply attention mask
+        if attention_mask is not None:
+            if attention_mask.dim() == 2:  # [B, N]
+                # Convert to [B, 1, 1, N] for broadcasting
+                attn_mask = ~attention_mask[:, None, None, :].bool()
+            elif attention_mask.dim() == 3:  # [B, N, N]
+                # Convert to [B, 1, N, N]
+                attn_mask = ~attention_mask[:, None, :, :].bool()
+            else:  # [B, H, N, N]
+                attn_mask = ~attention_mask.bool()
+
+            # Combine masks
+            mask = attn_mask if mask is None else (mask | attn_mask)
+
+        # Apply mask
+        if mask is not None:
+            scores.masked_fill_(mask, float('-inf'))
 
         attn = F.softmax(scores, dim=-1)
         out = torch.matmul(attn, v)
@@ -282,6 +336,116 @@ class FlashAttention(nn.Module):
         out = out.transpose(1, 2).reshape(B, N, -1)
         return self.out_proj(out)
 
+class MultiQueryFlashAttention(nn.Module):
+    """
+    Flash Attention with Multi-Query (MQA) or Grouped-Query Attention (GQA),
+    with support for padding masks (via varlen API).
+    """
+
+    def __init__(self, d_model: int, n_heads_q: int, n_heads_kv: int,
+                 dropout_p: float = 0.0, use_flash: bool = True):
+        super().__init__()
+        assert n_heads_q % n_heads_kv == 0, "n_heads_q must be divisible by n_heads_kv"
+
+        self.d_model = d_model
+        self.n_heads_q = n_heads_q
+        self.n_heads_kv = n_heads_kv
+        self.d_head = d_model // n_heads_q
+        self.scale = 1.0 / math.sqrt(self.d_head)
+        self.dropout_p = dropout_p
+        self.use_flash = use_flash
+
+        if self.use_flash:
+            from flash_attn import flash_attn_func, flash_attn_varlen_func
+            self.flash_attn_func = flash_attn_func
+            self.flash_attn_varlen_func = flash_attn_varlen_func
+
+        self.q_proj = nn.Linear(d_model, n_heads_q * self.d_head, bias=False)
+        self.kv_proj = nn.Linear(d_model, 2 * n_heads_kv * self.d_head, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor, causal: bool = True,
+                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            x: (B, N, C)
+            attention_mask: (B, N) with 1 for valid tokens, 0 for padding
+        """
+        B, N, C = x.shape
+
+        # Project Q and KV
+        q = self.q_proj(x).reshape(B, N, self.n_heads_q, self.d_head)
+        kv = self.kv_proj(x).reshape(B, N, 2, self.n_heads_kv, self.d_head)
+        k, v = kv.unbind(2)  # (B, N, Hkv, Dh)
+
+        if self.use_flash and attention_mask is not None:
+            # ---- Varlen FlashAttention ----
+            # Convert mask -> sequence lengths
+            seqlens = attention_mask.sum(dim=-1, dtype=torch.int32)  # (B,)
+            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=x.device)
+            cu_seqlens[1:] = torch.cumsum(seqlens, dim=0)
+            max_seqlen = seqlens.max().item()
+
+            # Flatten valid tokens
+            q = q[attention_mask.bool()].reshape(-1, self.n_heads_q, self.d_head)
+            k = k[attention_mask.bool()].reshape(-1, self.n_heads_kv, self.d_head)
+            v = v[attention_mask.bool()].reshape(-1, self.n_heads_kv, self.d_head)
+
+            # Run flash attn varlen
+            out = self.flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                softmax_scale=self.scale,
+                causal=causal,
+            )
+
+            # Re-pad back to (B, N, C)
+            out_padded = x.new_zeros(B, N, self.n_heads_q * self.d_head)
+            mask_idx = attention_mask.bool().unsqueeze(-1).expand(-1, -1, self.n_heads_q * self.d_head)
+            out_padded[mask_idx] = out.reshape(-1, self.n_heads_q * self.d_head)
+            out = out_padded
+
+        elif self.use_flash:
+            # ---- Standard FlashAttention (no mask, full seq) ----
+            q, k, v = [t.transpose(1, 2).contiguous().half() for t in (q, k, v)]
+            out = self.flash_attn_func(
+                q, k, v,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                softmax_scale=self.scale,
+                causal=causal
+            )
+            out = out.to(x.dtype).transpose(1, 2).reshape(B, N, -1)
+
+        else:
+            # ---- Manual fallback ----
+            q = q.transpose(1, 2)  # (B, Hq, N, D)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+
+            repeat_factor = self.n_heads_q // self.n_heads_kv
+            if repeat_factor > 1:
+                k = k.repeat_interleave(repeat_factor, dim=1)
+                v = v.repeat_interleave(repeat_factor, dim=1)
+
+            scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            if causal:
+                causal_mask = torch.triu(
+                    torch.ones(N, N, dtype=torch.bool, device=x.device),
+                    diagonal=1
+                )
+                scores.masked_fill_(causal_mask, float("-inf"))
+            if attention_mask is not None:
+                mask = attention_mask[:, None, None, :].to(torch.bool)
+                scores.masked_fill_(~mask, float("-inf"))
+
+            attn = F.softmax(scores, dim=-1)
+            out = torch.matmul(attn, v).transpose(1, 2).reshape(B, N, -1)
+
+        return self.out_proj(out)
 
 
 class SwiGLU(nn.Module):
@@ -326,14 +490,14 @@ class ParallelBlock(nn.Module):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = FlashAttention(d_model, n_heads, dropout=dropout, use_flash=use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads, n_heads_kv, dropout_p=dropout, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, causal=True, attention_mask=None):
         # Single normalization, then parallel paths
         normalized = self.norm(x)
-        attn_out = self.attn(normalized, causal)
+        attn_out = self.attn(normalized, causal, attention_mask)
         ffn_out = self.ffn(normalized)
 
         # Combine and add residual
@@ -346,7 +510,7 @@ class DeepNormParallelBlock(nn.Module):
     def __init__(self, d_model, n_heads, n_heads_kv, d_ff, dropout=0.1, use_flash=True, num_layers=1):
         super().__init__()
         self.norm = RMSNorm(d_model)
-        self.attn = FlashAttention(d_model, n_heads, use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads, n_heads_kv, dropout_p=dropout, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -355,7 +519,7 @@ class DeepNormParallelBlock(nn.Module):
 
     def forward(self, x, attention_mask=None, causal=True):
         normed = self.norm(x)
-        attn_out = self.attn(normed, causal=causal)
+        attn_out = self.attn(normed, causal=causal, attention_mask=attention_mask)
         ffn_out = self.ffn(normed)
 
         return x + self.dropout((attn_out + ffn_out) * self.residual_scale)

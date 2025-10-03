@@ -309,8 +309,8 @@ def train_language_model_distributed(rank, world_size):
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 5
-    batch_size = 4 if torch.cuda.is_available() else 4  # Smaller batch size for CPU
+    epochs = 2
+    batch_size = 32 if torch.cuda.is_available() else 4  # Smaller batch size for CPU
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4

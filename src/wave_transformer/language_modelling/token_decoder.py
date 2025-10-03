@@ -1,3 +1,5 @@
+import json
+import os.path
 from pathlib import Path
 from typing import Union
 
@@ -5,7 +7,6 @@ import torch
 import torch.nn as nn
 
 from wave_transformer.core.transformer import FlashAttention, RMSNorm
-
 
 
 # --- WaveToTokenDecoder ---
@@ -70,34 +71,50 @@ class WaveToTokenDecoder(nn.Module):
         logits = self.output_projection(x)
         return logits
 
-    def save(self, path: Union[str, Path]):
+    def save(self, model_dir: Union[str, Path]):
         """Save decoder state and configuration."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = Path(model_dir)
+        path.mkdir(parents=True, exist_ok=True)
 
-        checkpoint = {
-            'state_dict': self.state_dict(),
-            'config': {
-                'vocab_size': self.vocab_size,
-                'num_harmonics': self.num_harmonics,
-                'd_model': self.d_model,
-                'hidden_mult': self.hidden_mult,
-                'num_heads': self.num_heads,
-                'num_heads_kv': self.num_heads_kv,
-                'num_layers': self.num_layers,
-                'low_rank_output': self.low_rank_output,
-                'use_flash': self.use_flash,
-            }
+        config_path = path / 'decoder_config.json'
+        checkpoint_path = path / 'decoder_state_dict.pt'
+
+        config = {
+            'vocab_size': self.vocab_size,
+            'num_harmonics': self.num_harmonics,
+            'd_model': self.d_model,
+            'hidden_mult': self.hidden_mult,
+            'num_heads': self.num_heads,
+            'num_heads_kv': self.num_heads_kv,
+            'num_layers': self.num_layers,
+            'low_rank_output': self.low_rank_output,
+            'use_flash': self.use_flash,
         }
 
-        torch.save(checkpoint, path)
+        checkpoint = {
+            'decoder_state_dict': self.state_dict(),
+        }
+
+        with open(config_path, 'w', encoding="utf-8") as f:
+            json.dump(config, f)
+        torch.save(checkpoint, checkpoint_path)
 
     @classmethod
-    def load(cls, path: Union[str, Path], map_location=None):
-        """Load decoder from checkpoint."""
-        checkpoint = torch.load(path, map_location=map_location)
+    def load(cls, model_dir: Union[str, Path], map_location=None):
+        """Load decoder from model directory."""
+        if os.path.exists(model_dir) and os.path.isdir(model_dir):
+            path = Path(model_dir)
 
-        model = cls(**checkpoint['config'])
-        model.load_state_dict(checkpoint['state_dict'])
+            config_path = path / 'decoder_config.json'
+            checkpoint_path = path / 'decoder_state_dict.pt'
 
-        return model
+            with open(config_path, 'r', encoding="utf-8") as f:
+                config = json.load(f)
+            model = cls(**config)
+
+            checkpoint = torch.load(checkpoint_path, map_location=map_location)
+            model.load_state_dict(checkpoint['decoder_state_dict'])
+
+            return model
+        else:
+            raise FileNotFoundError

@@ -8,17 +8,17 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 
 # Load encoder and decoder
 encoder = TokenToWaveEncoder.load(
-    "E:\\WaveML\\Save\\wave_transformer_step_40000_encoderglobal_step_40000_epoch_1.pt",
+    "E:\\WaveML\\Save\\wave_transformer_step_20000_encoderglobal_step_20000_epoch_1.pt",
     map_location=None
 )
 decoder = WaveToTokenDecoder.load(
-    "E:\\WaveML\\Save\\wave_transformer_step_40000_decoderglobal_step_40000_epoch_1.pt",
+    "E:\\WaveML\\Save\\wave_transformer_step_20000_decoderglobal_step_20000_epoch_1.pt",
     map_location=None
 )
 
 # Load model
 model = WaveTransformer.load(
-    "E:\\WaveML\\Save\\wave_transformer_step_40000_transformerglobal_step_40000_epoch_1.pt",
+    "E:\\WaveML\\Save\\wave_transformer_step_20000_transformerglobal_step_20000_epoch_1.pt",
     wave_encoder=encoder,
     wave_decoder=decoder,
     map_location=None

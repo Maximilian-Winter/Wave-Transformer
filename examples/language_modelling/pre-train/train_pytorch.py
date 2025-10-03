@@ -14,8 +14,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from wave_transformer.core.transformer import WaveTransformer
-
-from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset, TextDatasetPadded
+from wave_transformer.language_modelling.text_datasets import TextDatasetPadded
+from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 

@@ -133,14 +133,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Got first batch (shape: {raw_batch['input_ids'].shape if 'input_ids' in raw_batch else 'unknown'})")
 
-        # Periodic detailed logging
-        if batch_idx % 50 == 0 and batch_idx > 0:
-            current_time = datetime.now()
-            time_elapsed = (current_time - last_log_time).total_seconds()
-            print(
-                f"[{current_time.strftime('%H:%M:%S')}] Rank {rank}: Processed {batch_idx} batches ({time_elapsed:.1f}s since last log)")
-            last_log_time = current_time
-
         batch = {
             'input_ids': raw_batch['input_ids'],
             'attention_mask': raw_batch['attention_mask']
@@ -150,7 +142,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            print("inputs shape:", inputs.shape)
             logits = model({"token_ids": inputs}, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
 

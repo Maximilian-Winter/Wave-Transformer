@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
-#import wandb
+import wandb
 
 from torch import optim, nn
 from torch.utils.data import DataLoader, get_worker_info, IterableDataset

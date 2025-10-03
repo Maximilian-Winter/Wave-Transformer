@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 from tqdm import tqdm
 
 from wave_transformer.core.transformer import WaveTransformer
-from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset
+from wave_transformer.language_modelling.new_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 from wave_transformer.language_modelling.train_utils import (
@@ -88,7 +88,7 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
                 yield sample
 
 
-def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank,
+def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank, device,
                 accumulation_steps=1, use_ddp=True, global_step=[0], use_wandb=True):
     """Training epoch with distributed support and detailed debugging."""
     model.train()
@@ -134,8 +134,8 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Got first batch (shape: {raw_batch['input_ids'].shape if 'input_ids' in raw_batch else 'unknown'})")
 
         batch = {
-            'input_ids': raw_batch['input_ids'],
-            'attention_mask': raw_batch['attention_mask']
+            'input_ids': raw_batch['input_ids'].to(device, non_blocking=True),
+            'attention_mask': raw_batch['attention_mask'].to(device, non_blocking=True)
         }
 
         inputs, targets, input_mask = prepare_autoregressive_batch(batch, pad_token_id)
@@ -305,7 +305,7 @@ def plot_epoch_losses(epoch_losses, save_path=None, window_size=100):
 
 
 @torch.no_grad()
-def evaluate_epoch(model, dataloader, pad_token_id, rank, use_ddp=True, use_wandb=True,
+def evaluate_epoch(model, dataloader, pad_token_id, rank, device, use_ddp=True, use_wandb=True,
                    epoch=None, global_step=None):
     """Evaluation epoch with distributed support and wandb logging."""
     model.eval()
@@ -319,8 +319,8 @@ def evaluate_epoch(model, dataloader, pad_token_id, rank, use_ddp=True, use_wand
 
     for idx, raw_batch in enumerate(progress):
         batch = {
-            'input_ids': raw_batch['input_ids'],
-            'attention_mask': raw_batch['attention_mask']
+            'input_ids': raw_batch['input_ids'].to(device, non_blocking=True),
+            'attention_mask': raw_batch['attention_mask'].to(device, non_blocking=True)
         }
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -388,7 +388,7 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 1024
+    seq_len = 512
     d_model = 512
     num_layers = 32
     num_heads = 8
@@ -455,10 +455,24 @@ def train_language_model_distributed(rank, world_size):
     ]
 
     train_dataset = MultiBoundedStreamingDataset(
-        dataset_specs, tokenizer, pad_token_id, sequence_length=seq_len, prefetch_batches=100,
-        device=device,
-        seed=42
+        dataset_specs=dataset_specs,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=seq_len,
+        batch_size=batch_size,
+        prefetch_batches=1024,  # reservoir
+        prefetch_chunk_batches=8,  # quick refills
+        tokenizer_batch_size=256,  # try 128/256/512
+        weighted_sampling=False,
+        global_max_entries=None,
+        seed=42,
+        move_to_device=False,
+        device=None,
+        debug=True,  # <-- enable periodic prints
+        log_interval_s=5.0,
+        stats_window_s=60.0,
     )
+
 
     # Use wrapper for distribution
     if use_ddp:
@@ -469,14 +483,16 @@ def train_language_model_distributed(rank, world_size):
             train_dataset_wrapped,
             batch_size=batch_size,
             drop_last=True,
-            num_workers=0
+            num_workers=0,
+            pin_memory=True,
         )
     else:
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             drop_last=True,
-            num_workers=0
+            num_workers=0,
+            pin_memory=True,
         )
 
     if rank == 0:
@@ -613,7 +629,7 @@ def train_language_model_distributed(rank, world_size):
         # Train
         train_loss = train_epoch(
             result_dir, epoch, wave_transformer_model, train_loader,
-            optimizer, scheduler, pad_token_id, rank, accumulation_steps,
+            optimizer, scheduler, pad_token_id, rank, device, accumulation_steps,
             use_ddp, global_step, use_wandb
         )
 
@@ -729,7 +745,7 @@ def main():
     torch.backends.cudnn.benchmark = True
 
     # Number of GPUs/processes to use
-    world_size = 2  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
+    world_size = 1  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
 
     if world_size == 1:
         # Single GPU/CPU mode - run directly without spawning

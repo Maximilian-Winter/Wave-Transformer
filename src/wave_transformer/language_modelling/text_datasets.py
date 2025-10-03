@@ -1,5 +1,7 @@
 import dataclasses
+import queue
 import random
+import threading
 from time import sleep
 
 import torch
@@ -232,6 +234,23 @@ class MultiBoundedStreamingDataset(IterableDataset):
             length=sequence_length
         )
         self.tokenizer.enable_truncation(max_length=sequence_length)
+        self.prefetch_batches = prefetch_batches
+        self._queue = queue.Queue(maxsize=prefetch_batches * batch_size)
+        self._stop_event = threading.Event()
+
+    def _producer(self):
+        """Worker thread to continuously fetch & tokenize and put samples into queue."""
+        for spec in self.dataset_specs:
+            while not self._stop_event.is_set() and (
+                    spec.max_entries is None or spec.current_idx < spec.max_entries
+            ):
+                tokenized_samples = self._fetch_and_tokenize_chunk(
+                    spec, self.batch_size * self.prefetch_batches
+                )
+                for sample in tokenized_samples:
+                    self._queue.put(sample)
+        # signal end
+        self._queue.put(None)
 
     def _create_dataset_iterator(self, spec: BoundedStreamingDataset, fetch_size: int):
         """Create an iterator for a chunk of entries from a dataset."""

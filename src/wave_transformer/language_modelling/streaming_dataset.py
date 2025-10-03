@@ -380,3 +380,95 @@ class MultiBoundedStreamingDataset(IterableDataset):
             if s.max_entries is not None:
                 total += s.max_entries
         return total
+
+
+
+
+# Example usage
+if __name__ == "__main__":
+    from tokenizers import Tokenizer
+
+    # Example setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Create dataset specifications
+    dataset_specs = [
+        BoundedStreamingDataset(
+            repo_id="wikimedia/wikipedia",
+            subset="20231101.en",
+            skip_first=0,
+            max_entries=10000,
+            weight=0.4
+        ),
+        BoundedStreamingDataset(
+            repo_id="roneneldan/TinyStories",
+            skip_first=0,
+            max_entries=5000,
+            weight=0.1
+        ),
+        BoundedStreamingDataset(
+            repo_id="HuggingFaceFW/fineweb",
+            skip_first=0,
+            max_entries=15000,
+            weight=0.5
+        ),
+    ]
+
+    # Load tokenizer (example - replace with your actual tokenizer)
+    model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
+    tokenizer = Tokenizer.from_pretrained(model_name)
+    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
+
+    # Create dataset with sequential processing
+    dataset_sequential = MultiBoundedStreamingDataset(
+        dataset_specs=dataset_specs,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=512,
+        device=device,
+        global_max_entries=100,
+        weighted_sampling=False,  # Sequential processing
+        tokenizer_batch_size=64  # Batch size for tokenization
+    )
+
+    # Create dataset with weighted sampling
+    dataset_weighted = MultiBoundedStreamingDataset(
+        dataset_specs=dataset_specs,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+        sequence_length=512,
+        device=device,
+        global_max_entries=100,
+        weighted_sampling=True,  # Weighted sampling
+        tokenizer_batch_size=64,  # Batch size for tokenization
+        seed=42
+    )
+
+    # Test iteration with timing
+    import time
+
+    print("Testing sequential dataset with batch tokenization:")
+    start_time = time.time()
+    sample_count = 0
+    for i, batch in enumerate(dataset_sequential):
+        sample_count += 1
+        if i >= 100:
+            break
+        if i % 20 == 0:
+            print(f"Sample {i}: input_ids shape = {batch['input_ids'].shape}, "
+                  f"attention_mask shape = {batch['attention_mask'].shape}")
+    elapsed = time.time() - start_time
+    print(f"Processed {sample_count} samples in {elapsed:.2f} seconds ({sample_count / elapsed:.1f} samples/sec)")
+
+    print("\nTesting weighted sampling dataset with batch tokenization:")
+    start_time = time.time()
+    sample_count = 0
+    for i, batch in enumerate(dataset_weighted):
+        sample_count += 1
+        if i >= 100:
+            break
+        if i % 20 == 0:
+            print(f"Sample {i}: input_ids shape = {batch['input_ids'].shape}, "
+                  f"attention_mask shape = {batch['attention_mask'].shape}")
+    elapsed = time.time() - start_time
+    print(f"Processed {sample_count} samples in {elapsed:.2f} seconds ({sample_count / elapsed:.1f} samples/sec)")

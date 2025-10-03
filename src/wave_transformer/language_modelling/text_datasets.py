@@ -193,7 +193,7 @@ class BoundedStreamingDataset:
 
 class MultiBoundedStreamingDataset(IterableDataset):
     """
-    Simplified streaming dataset that tokenizes text directly without buffering.
+    Optimized streaming dataset that uses batch tokenization for better performance.
     Supports batch processing for efficient data loading.
     """
 
@@ -208,7 +208,8 @@ class MultiBoundedStreamingDataset(IterableDataset):
             device: torch.device = torch.device("cpu"),
             global_max_entries: Optional[int] = None,
             seed: Optional[int] = None,
-            weighted_sampling: bool = False
+            weighted_sampling: bool = False,
+            tokenizer_batch_size: int = 64  # Size for batch tokenization
     ):
         super().__init__()
 
@@ -217,18 +218,20 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.pad_token_id = pad_token_id
         self.sequence_length = sequence_length
         self.batch_size = batch_size
-        self.prefetch_batches = prefetch_batches  # Number of batches to fetch at once
+        self.prefetch_batches = prefetch_batches
         self.device = device
         self.global_max_entries = global_max_entries
         self.seed = seed
         self.weighted_sampling = weighted_sampling
+        self.tokenizer_batch_size = tokenizer_batch_size
+
+        # Configure tokenizer for batch processing
         self.tokenizer.enable_padding(
             pad_id=pad_token_id,
-            pad_token=tokenizer.decode([pad_token_id], False),  # This might need adjustment based on your tokenizer
+            pad_token=tokenizer.decode([pad_token_id], False),
             length=sequence_length
         )
         self.tokenizer.enable_truncation(max_length=sequence_length)
-
 
     def _create_dataset_iterator(self, spec: BoundedStreamingDataset, fetch_size: int):
         """Create an iterator for a chunk of entries from a dataset."""
@@ -240,15 +243,10 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 streaming=True
             )
 
-            # Calculate how many entries to skip (initial skip + already processed)
             total_skip = spec.skip_first + spec.current_idx
-
-            # Apply skip to get to current position
             if total_skip > 0:
                 ds = ds.skip(total_skip)
 
-            # Take only the requested chunk size
-            # Make sure we don't exceed max_entries if specified
             if spec.max_entries is not None:
                 remaining = spec.max_entries - spec.current_idx
                 fetch_size = min(fetch_size, remaining)
@@ -263,30 +261,79 @@ class MultiBoundedStreamingDataset(IterableDataset):
             print(f"Warning: Failed to load dataset {spec.repo_id}: {e}")
             return None
 
-    def _tokenize_sample(self, text: str) -> Dict[str, torch.Tensor]:
-        """Tokenize a single text sample."""
+    def _tokenize_batch(self, texts: List[str]) -> List[Dict[str, torch.Tensor]]:
+        """Tokenize a batch of texts using batch encoding."""
+        if not texts:
+            return []
 
         try:
-            # Tokenize with padding and truncation
-            encoding = self.tokenizer.encode(text, add_special_tokens=False)
+            # Batch encode all texts at once
+            encodings = self.tokenizer.encode_batch(texts, add_special_tokens=False)
 
-            # Get the padded/truncated ids
-            input_ids = encoding.ids
+            results = []
+            for encoding in encodings:
+                results.append({
+                    "input_ids": torch.tensor(encoding.ids, dtype=torch.long).to(
+                        device=self.device, non_blocking=True
+                    ),
+                    "attention_mask": torch.tensor(encoding.attention_mask, dtype=torch.bool).to(
+                        device=self.device, non_blocking=True
+                    ),
+                })
+            return results
 
-            # Create attention mask (1 for real tokens, 0 for padding)
-            attention_mask = encoding.attention_mask
-
-            return {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long).to(device=self.device, non_blocking=True),
-                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool).to(device=self.device, non_blocking=True),
-            }
         except Exception as e:
-            print(f"Warning: Failed to tokenize text: {e}")
-            # Return padded sequence on error
-            return {
-                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True),
-                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True)
-            }
+            print(f"Warning: Batch tokenization failed: {e}")
+            # Fallback to individual tokenization
+            results = []
+            for text in texts:
+                try:
+                    encoding = self.tokenizer.encode(text, add_special_tokens=False)
+                    results.append({
+                        "input_ids": torch.tensor(encoding.ids, dtype=torch.long).to(
+                            device=self.device, non_blocking=True
+                        ),
+                        "attention_mask": torch.tensor(encoding.attention_mask, dtype=torch.bool).to(
+                            device=self.device, non_blocking=True
+                        ),
+                    })
+                except:
+                    # Return padded sequence on error
+                    results.append({
+                        "input_ids": torch.full((self.sequence_length,), self.pad_token_id,
+                                                dtype=torch.long).to(device=self.device, non_blocking=True),
+                        "attention_mask": torch.zeros(self.sequence_length,
+                                                      dtype=torch.bool).to(device=self.device, non_blocking=True)
+                    })
+            return results
+
+    def _fetch_and_tokenize_chunk(self, spec: BoundedStreamingDataset, samples_to_fetch: int):
+        """Fetch data from dataset and tokenize in batches."""
+        ds = self._create_dataset_iterator(spec, samples_to_fetch)
+        if ds is None:
+            return []
+
+        # Collect texts in batches for efficient tokenization
+        text_buffer = []
+        tokenized_samples = []
+
+        for sample in ds:
+            text = sample.get(spec.text_column, "")
+            text_buffer.append(text)
+            spec.current_idx += 1
+
+            # Process buffer when it reaches tokenizer batch size
+            if len(text_buffer) >= self.tokenizer_batch_size:
+                tokenized = self._tokenize_batch(text_buffer)
+                tokenized_samples.extend(tokenized)
+                text_buffer = []
+
+        # Process remaining texts in buffer
+        if text_buffer:
+            tokenized = self._tokenize_batch(text_buffer)
+            tokenized_samples.extend(tokenized)
+
+        return tokenized_samples
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
         if self.seed is not None:
@@ -300,7 +347,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
         fetch_size = self.batch_size * self.prefetch_batches
 
         if self.weighted_sampling and len(self.dataset_specs) > 1:
-            # Weighted sampling with chunked fetching
+            # Weighted sampling with batch tokenization
             while True:
                 if self.global_max_entries and global_yielded >= self.global_max_entries:
                     break
@@ -314,18 +361,18 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 if not active_specs:
                     break
 
-                # Collect samples from all active datasets based on weights
+                # Calculate samples needed
                 samples_needed = min(
                     fetch_size,
                     (self.global_max_entries - global_yielded) if self.global_max_entries else fetch_size
                 )
 
-                # Calculate how many samples to take from each dataset based on weights
+                # Calculate samples per dataset based on weights
                 total_weight = sum(spec.weight for spec in active_specs)
                 samples_per_dataset = {}
                 remaining_samples = samples_needed
 
-                for spec in active_specs[:-1]:  # All but last
+                for spec in active_specs[:-1]:
                     proportion = spec.weight / total_weight
                     samples = min(
                         int(samples_needed * proportion),
@@ -335,7 +382,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     samples_per_dataset[spec.repo_id] = samples
                     remaining_samples -= samples
 
-                # Give remaining samples to last dataset
                 if active_specs:
                     last_spec = active_specs[-1]
                     samples_per_dataset[last_spec.repo_id] = min(
@@ -343,24 +389,20 @@ class MultiBoundedStreamingDataset(IterableDataset):
                         last_spec.max_entries - last_spec.current_idx if last_spec.max_entries else remaining_samples
                     )
 
-                # Fetch and process samples from each dataset
+                # Fetch and tokenize from each dataset
                 all_samples = []
                 for spec in active_specs:
                     samples_to_fetch = samples_per_dataset.get(spec.repo_id, 0)
                     if samples_to_fetch > 0:
-                        ds = self._create_dataset_iterator(spec, samples_to_fetch)
-                        if ds is not None:
-                            for sample in ds:
-                                text = sample.get(spec.text_column, "")
-                                tokenized = self._tokenize_sample(text)
-                                all_samples.append((spec.weight, tokenized))
-                                spec.current_idx += 1
+                        tokenized_samples = self._fetch_and_tokenize_chunk(spec, samples_to_fetch)
+                        # Add weight information for weighted sampling
+                        for sample in tokenized_samples:
+                            all_samples.append((spec.weight, sample))
 
-                # Shuffle samples based on weights
+                # Shuffle and yield
                 if all_samples:
                     random.shuffle(all_samples)
 
-                    # Yield individual samples
                     for _, sample in all_samples:
                         yield sample
                         global_yielded += 1
@@ -369,13 +411,13 @@ class MultiBoundedStreamingDataset(IterableDataset):
                             return
 
         else:
-            # Sequential processing with chunked fetching
+            # Sequential processing with batch tokenization
             for spec in self.dataset_specs:
                 while spec.max_entries is None or spec.current_idx < spec.max_entries:
                     if self.global_max_entries and global_yielded >= self.global_max_entries:
                         return
 
-                    # Calculate how many samples to fetch
+                    # Calculate samples to fetch
                     samples_to_fetch = fetch_size
                     if spec.max_entries is not None:
                         remaining_in_dataset = spec.max_entries - spec.current_idx
@@ -387,16 +429,12 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     if samples_to_fetch <= 0:
                         break
 
-                    # Fetch the next chunk
-                    ds = self._create_dataset_iterator(spec, samples_to_fetch)
-                    if ds is None:
-                        break
+                    # Fetch and tokenize chunk
+                    tokenized_samples = self._fetch_and_tokenize_chunk(spec, samples_to_fetch)
 
-                    for sample in ds:
-                        text = sample.get(spec.text_column, "")
-                        tokenized = self._tokenize_sample(text)
-                        yield tokenized
-                        spec.current_idx += 1
+                    # Yield tokenized samples
+                    for sample in tokenized_samples:
+                        yield sample
                         global_yielded += 1
 
                         if self.global_max_entries and global_yielded >= self.global_max_entries:
@@ -406,8 +444,12 @@ class MultiBoundedStreamingDataset(IterableDataset):
         """Stack individual samples into a batch."""
         if not samples:
             return {
-                "input_ids": torch.empty(0, self.sequence_length, dtype=torch.long).to(device=self.device, non_blocking=True),
-                "attention_mask": torch.empty(0, self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True)
+                "input_ids": torch.empty(0, self.sequence_length, dtype=torch.long).to(
+                    device=self.device, non_blocking=True
+                ),
+                "attention_mask": torch.empty(0, self.sequence_length, dtype=torch.bool).to(
+                    device=self.device, non_blocking=True
+                )
             }
 
         return {
@@ -418,7 +460,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
     def __len__(self) -> int:
         total_samples = self.global_max_entries if self.global_max_entries else \
             sum(spec.max_entries for spec in self.dataset_specs if spec.max_entries is not None)
-        return total_samples  # Return number of samples, not batches
+        return total_samples
 
 
 # Example usage
@@ -464,7 +506,8 @@ if __name__ == "__main__":
         sequence_length=512,
         device=device,
         global_max_entries=100,
-        weighted_sampling=False  # Sequential processing
+        weighted_sampling=False,  # Sequential processing
+        tokenizer_batch_size=64  # Batch size for tokenization
     )
 
     # Create dataset with weighted sampling
@@ -476,20 +519,35 @@ if __name__ == "__main__":
         device=device,
         global_max_entries=100,
         weighted_sampling=True,  # Weighted sampling
+        tokenizer_batch_size=64,  # Batch size for tokenization
         seed=42
     )
 
-    # Test iteration
-    print("Testing sequential dataset:")
-    for i, batch in enumerate(dataset_sequential):
-        if i >= 5:
-            break
-        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}, "
-              f"attention_mask shape = {batch['attention_mask'].shape}")
+    # Test iteration with timing
+    import time
 
-    print("\nTesting weighted sampling dataset:")
-    for i, batch in enumerate(dataset_weighted):
-        if i >= 5:
+    print("Testing sequential dataset with batch tokenization:")
+    start_time = time.time()
+    sample_count = 0
+    for i, batch in enumerate(dataset_sequential):
+        sample_count += 1
+        if i >= 100:
             break
-        print(f"Batch {i}: input_ids shape = {batch['input_ids'].shape}, "
-              f"attention_mask shape = {batch['attention_mask'].shape}")
+        if i % 20 == 0:
+            print(f"Sample {i}: input_ids shape = {batch['input_ids'].shape}, "
+                  f"attention_mask shape = {batch['attention_mask'].shape}")
+    elapsed = time.time() - start_time
+    print(f"Processed {sample_count} samples in {elapsed:.2f} seconds ({sample_count / elapsed:.1f} samples/sec)")
+
+    print("\nTesting weighted sampling dataset with batch tokenization:")
+    start_time = time.time()
+    sample_count = 0
+    for i, batch in enumerate(dataset_weighted):
+        sample_count += 1
+        if i >= 100:
+            break
+        if i % 20 == 0:
+            print(f"Sample {i}: input_ids shape = {batch['input_ids'].shape}, "
+                  f"attention_mask shape = {batch['attention_mask'].shape}")
+    elapsed = time.time() - start_time
+    print(f"Processed {sample_count} samples in {elapsed:.2f} seconds ({sample_count / elapsed:.1f} samples/sec)")

@@ -173,8 +173,8 @@ def train_language_model():
     num_harmonics = 64
 
     # Hyperparameters
-    epochs = 20
-    batch_size = 32
+    epochs = 10
+    batch_size = 1
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -207,7 +207,7 @@ def train_language_model():
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         eval_corpus = texts[factor:]
-        train_corpus = train_corpus * 100
+        train_corpus = train_corpus * 10
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)

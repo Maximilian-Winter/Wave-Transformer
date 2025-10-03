@@ -39,16 +39,30 @@ def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
-    # Initialize the process group
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # Detect available backend
+    if torch.cuda.is_available() and torch.distributed.is_nccl_available():
+        backend = "nccl"
+        # Set device for this process
+        torch.cuda.set_device(rank)
+    elif torch.distributed.is_gloo_available():
+        backend = "gloo"
+        # Gloo works with both CPU and GPU
+        if torch.cuda.is_available():
+            torch.cuda.set_device(rank)
+    else:
+        raise RuntimeError("No distributed backend available. Install NCCL or ensure Gloo is available.")
 
-    # Set device for this process
-    torch.cuda.set_device(rank)
+    # Initialize the process group
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
+
+    if rank == 0:
+        print(f"Using distributed backend: {backend}")
 
 
 def cleanup():
     """Clean up the distributed environment."""
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 class DistributedIterableWrapper(torch.utils.data.IterableDataset):
@@ -70,7 +84,8 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
                 yield sample
 
 
-def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank, accumulation_steps=1):
+def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_token_id, rank,
+                accumulation_steps=1, use_ddp=True, global_step=[0]):
     """Training epoch with distributed support."""
     model.train()
     epoch_losses = []
@@ -109,17 +124,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         epoch_losses.append(loss_value)
         accumulated_loss += loss_value
 
-        # Save checkpoint from main process only
-        if rank == 0 and (batch_idx + 1) % 10000 == 0:
-            save_model_bundle(
-                model.module,  # Access underlying model from DDP wrapper
-                result_dir,
-                f"wave_transformer_batch_{batch_idx + 1}",
-                epoch=epoch + 1,
-                optimizer=optimizer,
-                scheduler=scheduler
-            )
-
         # Step after accumulation
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -129,6 +133,24 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 scheduler.step()
             accumulated_loss = 0
 
+            # Increment global step counter after optimizer step
+            global_step[0] += 1
+
+            # Save checkpoint based on global steps (only from rank 0)
+            # This ensures consistent saving regardless of data distribution
+            if rank == 0 and global_step[0] % 5000 == 0:  # Save every 5000 optimizer steps
+                model_to_save = model.module if use_ddp else model
+                save_model_bundle(
+                    model_to_save,
+                    result_dir,
+                    f"wave_transformer_step_{global_step[0]}",
+                    epoch=epoch + 1,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    global_step=global_step[0]
+                )
+                print(f"Checkpoint saved at global step {global_step[0]}")
+
         # Update progress bar on main process
         if rank == 0:
             if scheduler is not None and len(optimizer.param_groups) > 0:
@@ -136,26 +158,30 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
                     'ppl': f"{math.exp(loss_value):.2f}",
-                    'lr': f"{cur_lr:.2e}"
+                    'lr': f"{cur_lr:.2e}",
+                    'step': global_step[0]
                 })
             else:
                 progress.set_postfix({
                     'loss': f"{loss_value:.4f}",
-                    'ppl': f"{math.exp(loss_value):.2f}"
+                    'ppl': f"{math.exp(loss_value):.2f}",
+                    'step': global_step[0]
                 })
 
-    # Gather losses from all processes
+    # Gather losses from all processes if using distributed training
     if len(epoch_losses) > 0:
         avg_loss = sum(epoch_losses) / len(epoch_losses)
-        avg_loss_tensor = torch.tensor(avg_loss).cuda(rank)
-        dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
-        avg_loss = avg_loss_tensor.item() / dist.get_world_size()
+        if use_ddp and dist.is_initialized():
+            avg_loss_tensor = torch.tensor(avg_loss).cuda(rank) if torch.cuda.is_available() else torch.tensor(avg_loss)
+            dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
+            avg_loss = avg_loss_tensor.item() / dist.get_world_size()
     else:
         avg_loss = 0.0
 
     # Plot losses only on main process
     if rank == 0:
-        plot_epoch_losses(epoch_losses, f"{camel_to_snake(model.module.__class__.__name__)}_epoch_{epoch}.png")
+        model_name = model.module.__class__.__name__ if use_ddp else model.__class__.__name__
+        plot_epoch_losses(epoch_losses, f"{camel_to_snake(model_name)}_epoch_{epoch}.png")
 
     return avg_loss
 
@@ -201,7 +227,7 @@ def plot_epoch_losses(epoch_losses, save_path=None, window_size=100):
 
 
 @torch.no_grad()
-def evaluate_epoch(model, dataloader, pad_token_id, rank):
+def evaluate_epoch(model, dataloader, pad_token_id, rank, use_ddp=True):
     """Evaluation epoch with distributed support."""
     model.eval()
     epoch_losses = []
@@ -232,12 +258,13 @@ def evaluate_epoch(model, dataloader, pad_token_id, rank):
                 'ppl': f"{math.exp(loss_value):.2f}"
             })
 
-    # Gather losses from all processes
+    # Gather losses from all processes if using distributed training
     if len(epoch_losses) > 0:
         avg_loss = sum(epoch_losses) / len(epoch_losses)
-        avg_loss_tensor = torch.tensor(avg_loss).cuda(rank)
-        dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
-        avg_loss = avg_loss_tensor.item() / dist.get_world_size()
+        if use_ddp and dist.is_initialized():
+            avg_loss_tensor = torch.tensor(avg_loss).cuda(rank) if torch.cuda.is_available() else torch.tensor(avg_loss)
+            dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
+            avg_loss = avg_loss_tensor.item() / dist.get_world_size()
     else:
         avg_loss = 0.0
 
@@ -246,16 +273,32 @@ def evaluate_epoch(model, dataloader, pad_token_id, rank):
 
 def train_language_model_distributed(rank, world_size):
     """Main training function for distributed training."""
-    # Setup distributed training
-    setup(rank, world_size)
+    # Check if we're doing distributed training
+    use_ddp = world_size > 1
+
+    if use_ddp:
+        # Setup distributed training
+        setup(rank, world_size)
 
     if rank == 0:
-        print(f"Training on {world_size} GPUs")
+        if use_ddp:
+            print(f"Training on {world_size} GPUs")
+        else:
+            print("Training on single GPU/CPU")
+
+    # Determine device
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(rank)
+    else:
+        device = torch.device('cpu')
+        print(f"WARNING: CUDA not available, using CPU")
 
     result_dir = "./results"
     if rank == 0:
         os.makedirs(result_dir, exist_ok=True)
         print(f"Result directory: {result_dir}")
+        print(f"Using device: {device}")
 
     # Model Parameters
     seq_len = 512
@@ -267,7 +310,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 32  # Per GPU batch size (16 total across 2 GPUs)
+    batch_size = 32 if torch.cuda.is_available() else 4  # Smaller batch size for CPU
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -297,7 +340,7 @@ def train_language_model_distributed(rank, world_size):
     # Create datasets with different seeds for each rank to ensure different data
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs, tokenizer, pad_token_id, seq_len,
-        device=torch.device(f'cuda:{rank}'),
+        device=device,
         seed=42 + rank,  # Different seed per GPU for different data
         preloaded_data=None
     )
@@ -305,30 +348,32 @@ def train_language_model_distributed(rank, world_size):
     eval_dataset = BoundedStreamingDataset(
         "HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
         max_entries=5000, skip_first=500_000 + rank * 5000,  # Different skip per GPU
-        device=torch.device(f'cuda:{rank}'),
+        device=device,
         preloaded_data=None
     )
 
     if rank == 0:
         print("Datasets created...")
 
-    # Wrap datasets for distributed training
-    distributed_train_dataset = DistributedIterableWrapper(train_dataset, rank, world_size)
-    distributed_eval_dataset = DistributedIterableWrapper(eval_dataset, rank, world_size)
+    # Wrap datasets for distributed training if using multiple GPUs
+    if use_ddp:
+        distributed_train_dataset = DistributedIterableWrapper(train_dataset, rank, world_size)
+        distributed_eval_dataset = DistributedIterableWrapper(eval_dataset, rank, world_size)
+    else:
+        distributed_train_dataset = train_dataset
+        distributed_eval_dataset = eval_dataset
 
     # Create dataloaders WITHOUT samplers (they don't work with IterableDataset)
     train_loader = DataLoader(
         distributed_train_dataset,
         batch_size=batch_size,
         drop_last=True,
-
     )
 
     eval_loader = DataLoader(
         distributed_eval_dataset,
         batch_size=eval_batch_size,
         drop_last=False,
-
     )
 
     if rank == 0:
@@ -357,7 +402,8 @@ def train_language_model_distributed(rank, world_size):
     if rank == 0:
         print("Creating model...")
 
-    # Create model and move to GPU
+    # Create model and move to device
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,
         wave_decoder=wave_decoder,
@@ -367,18 +413,20 @@ def train_language_model_distributed(rank, world_size):
         transformer_num_layers=num_layers,
         transformer_d_ff_multi=4,
         dropout=dropout
-    ).to(rank, dtype=torch.bfloat16)
+    ).to(device, dtype=dtype)
 
-    # Wrap model with DDP
-    wave_transformer_model = DDP(
-        wave_transformer_model,
-        device_ids=[rank],
-        output_device=rank,
-        find_unused_parameters=False
-    )
+    # Wrap model with DDP if using multiple GPUs
+    if use_ddp:
+        wave_transformer_model = DDP(
+            wave_transformer_model,
+            device_ids=[rank] if torch.cuda.is_available() else None,
+            output_device=rank if torch.cuda.is_available() else None,
+            find_unused_parameters=False
+        )
 
     if rank == 0:
-        print("Model:\n", wave_transformer_model.module)
+        model_to_print = wave_transformer_model.module if use_ddp else wave_transformer_model
+        print("Model:\n", model_to_print)
         print(f"Model parameters: {sum(p.numel() for p in wave_transformer_model.parameters()):,}")
 
     # Create optimizer
@@ -411,10 +459,11 @@ def train_language_model_distributed(rank, world_size):
     # Create chronicle (only on main process)
     if rank == 0:
         timestamp = datetime.now().isoformat()
+        model_to_save = wave_transformer_model.module if use_ddp else wave_transformer_model
         chronicle = {
-            'experiment_name': f"{camel_to_snake(wave_transformer_model.module.__class__.__name__)}_experiment",
+            'experiment_name': f"{camel_to_snake(model_to_save.__class__.__name__)}_experiment",
             'timestamp': timestamp,
-            'architecture': extract_architecture_details(wave_transformer_model.module),
+            'architecture': extract_architecture_details(model_to_save),
             'hyperparameters': {
                 'epochs': epochs,
                 'batch_size': batch_size * world_size,  # Total batch size
@@ -443,19 +492,20 @@ def train_language_model_distributed(rank, world_size):
     last_train_ppl = None
     last_eval_ppl = None
 
+    # Global step counter that persists across epochs
+    global_step = [0]  # Using list to make it mutable in nested function
+
     # Training loop
     for epoch in range(epochs):
-        # For streaming datasets, we don't need to set epoch
-
         # Train
         train_loss = train_epoch(
             result_dir, epoch, wave_transformer_model, train_loader,
-            optimizer, scheduler, pad_token_id, rank, accumulation_steps
+            optimizer, scheduler, pad_token_id, rank, accumulation_steps, use_ddp, global_step
         )
 
         # Evaluate
         eval_loss = evaluate_epoch(
-            wave_transformer_model, eval_loader, pad_token_id, rank
+            wave_transformer_model, eval_loader, pad_token_id, rank, use_ddp
         )
 
         train_ppl = math.exp(train_loss)
@@ -463,9 +513,10 @@ def train_language_model_distributed(rank, world_size):
 
         # Generation and reporting (only on main process)
         if rank == 0:
+            model_for_gen = wave_transformer_model.module if use_ddp else wave_transformer_model
             generations = test_generation(
-                wave_transformer_model.module, tokenizer, 100,
-                torch.device(f'cuda:{rank}'),
+                model_for_gen, tokenizer, 100,
+                device,
                 prompts=[
                     "The tao that can be told",
                     "Success is as dangerous as failure."
@@ -498,7 +549,7 @@ def train_language_model_distributed(rank, world_size):
             })
 
             save_model_bundle(
-                wave_transformer_model.module,
+                model_for_gen,
                 result_dir,
                 "wave_transformer",
                 epoch=epoch + 1,
@@ -520,16 +571,19 @@ def train_language_model_distributed(rank, world_size):
             # Save chronicle
             chronicle_path = save_training_chronicle(
                 chronicle, result_dir,
-                f"{camel_to_snake(wave_transformer_model.module.__class__.__name__)}_experiment",
+                f"{camel_to_snake(model_for_gen.__class__.__name__)}_experiment",
                 timestamp
             )
             print(f"  Session saved: {chronicle_path}")
 
-        # Synchronize between processes
-        dist.barrier()
+        # Synchronize between processes if using distributed training
+        if use_ddp:
+            dist.barrier()
         sleep(0.025)
 
-    cleanup()
+    if use_ddp:
+        cleanup()
+
     return wave_transformer_model, chronicle if rank == 0 else (wave_transformer_model, None)
 
 
@@ -543,24 +597,30 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Number of GPUs to use
-    world_size = 1  # Change this to 1 for single GPU
+    # Number of GPUs/processes to use
+    world_size = 1  # Set to 1 for single GPU/CPU, 2+ for multi-GPU
 
     if world_size == 1:
-        # For single GPU, you could run directly without spawn
+        # Single GPU/CPU mode - run directly without spawning
+        print("Running in single GPU/CPU mode")
         train_language_model_distributed(0, 1)
     else:
-        if torch.cuda.device_count() < world_size:
-            print(f"Warning: Requested {world_size} GPUs but only {torch.cuda.device_count()} available")
-            world_size = min(world_size, torch.cuda.device_count())
+        # Multi-GPU mode
+        if not torch.cuda.is_available():
+            print("WARNING: Multi-GPU training requested but CUDA not available. Falling back to single CPU.")
+            train_language_model_distributed(0, 1)
+        else:
+            if torch.cuda.device_count() < world_size:
+                print(f"Warning: Requested {world_size} GPUs but only {torch.cuda.device_count()} available")
+                world_size = min(world_size, torch.cuda.device_count())
 
-        # Spawn processes for distributed training
-        mp.spawn(
-            train_language_model_distributed,
-            args=(world_size,),
-            nprocs=world_size,
-            join=True
-        )
+            # Spawn processes for distributed training
+            mp.spawn(
+                train_language_model_distributed,
+                args=(world_size,),
+                nprocs=world_size,
+                join=True
+            )
 
 
 if __name__ == "__main__":

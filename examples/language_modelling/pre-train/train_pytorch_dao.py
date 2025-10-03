@@ -167,7 +167,7 @@ def train_language_model():
     # Model Parameters
     seq_len = 256
     d_model = 512
-    num_layers = 4
+    num_layers = 128
     num_heads = 8
     dropout = 0.1
     num_harmonics = 64

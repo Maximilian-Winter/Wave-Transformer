@@ -195,8 +195,7 @@ def train_language_model():
     torch.set_float32_matmul_precision('high')
 
     dataset_specs = [
-        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
-        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 500_000, "weight": 0.4},
         {"name": "HuggingFaceFW/fineweb", "skip": 0, "max_entries": 500_000, "weight": 0.5},
     ]
     #with open("prepared_datasets/train_dataset_prepared.json", "r") as f:

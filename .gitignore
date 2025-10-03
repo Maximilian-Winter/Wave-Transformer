@@ -10,3 +10,4 @@
 /src/wave_transformer/audio/__pycache__
 /examples/language_modelling/pre-train/prepared_datasets/
 /examples/language_modelling/pre-train/results/
+/.idea/*

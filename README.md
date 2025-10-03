@@ -14,26 +14,17 @@ It introduces frequency, amplitude, and phase components into the transformer pi
 ```bash
 pip install torch torchvision
 pip install datasets tokenizers
-pip install flash-attn --no-build-isolation   # Optional: FlashAttention support
+pip install flash-attn --no-build-isolation
+git clone https://github.com/Maximilian-Winter/Wave-Transformer.git
+cd Wave-Transformer
+pip install .
 ````
 
 ---
 
 ## 🧪 Usage
 
-Example: training on WikiText-103
-
-```bash
-python examples/language_modelling/py_torch/train_pytorch.py
-```
-
-Example: inference
-
-```bash
-python examples/language_modelling/py_torch/inference.py \
-    --model_path ./wave_transformer_epoch_1.pt \
-    --prompt "The tao that can be told"
-```
+Later...
 
 ---
 

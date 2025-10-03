@@ -499,77 +499,23 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.batch_size = batch_size
 
 
-    def _create_dataset_iterator(self, repo_id: str, subset: str, split: str):
+    def _create_dataset_iterator(self, repo_id: str, subset: str, split: str, entries: int, skip_entries: int):
         """Create an iterator for a single dataset with its own buffer."""
-        skip_first = spec.get("skip", 0)
-        max_entries = spec.get("max_entries", 0)
+
         ds = load_dataset(
-            spec["name"],
-            spec.get("subset", None),
-            split="train",
+            repo_id,
+            subset,
+            split=split,
             streaming=True
-        ).skip(skip_first).take(max_entries)
+        ).skip(skip_entries).take(entries)
         try:
             text_iterator = (sample[self.text_column] for sample in ds)
         except KeyError:
             print(f"Warning: Text column '{self.text_column}' not found in {spec['name']}")
             return None
 
-        buffer = []
-        entries_skipped = 0
-        entries_yielded = 0
-
-        max_entries = spec["max_entries"]
-
-        def generate():
-            nonlocal buffer, entries_skipped, entries_yielded
-
-            for text in text_iterator:
-                if not isinstance(text, str) or not text.strip():
-                    continue
-
-                try:
-
-                    encoding = self.tokenizer.encode(text, add_special_tokens=False)
-                    tokens = encoding.ids
-                except Exception as e:
-                    print(f"Warning: Failed to tokenize text in {spec['name']}: {e}")
-                    continue
-
-                buffer.extend(tokens)
-
-                while len(buffer) >= self.sequence_length:
-                    sequence = buffer[:self.sequence_length]
-                    buffer = buffer[self.stride:]
 
 
-                    if entries_yielded >= max_entries:
-                        return
-
-                    padded_sequence, attention_mask = apply_padding(
-                        sequence,
-                        self.sequence_length,
-                        self.pad_token_id
-                    )
-
-                    yield {
-                        "input_ids": torch.tensor(padded_sequence, dtype=torch.long, device=self.device),
-                        "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
-                    }
-
-                    entries_yielded += 1
-
-            if buffer and entries_yielded < max_entries:
-                padded_sequence, attention_mask = apply_padding(
-                    buffer,
-                    self.sequence_length,
-                    self.pad_token_id
-                )
-
-                yield {
-                    "input_ids": torch.tensor(padded_sequence, dtype=torch.long, device=self.device),
-                    "attention_mask": torch.tensor(attention_mask, dtype=torch.bool, device=self.device)
-                }
 
         return generate()
 

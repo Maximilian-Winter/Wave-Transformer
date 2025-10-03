@@ -265,12 +265,6 @@ class MultiBoundedStreamingDataset(IterableDataset):
 
     def _tokenize_sample(self, text: str) -> Dict[str, torch.Tensor]:
         """Tokenize a single text sample."""
-        if not isinstance(text, str) or not text.strip():
-            # Return empty sequence if text is invalid
-            return {
-                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
-                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
-            }
 
         try:
             # Tokenize with padding and truncation
@@ -283,15 +277,15 @@ class MultiBoundedStreamingDataset(IterableDataset):
             attention_mask = encoding.attention_mask
 
             return {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
-                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0),
+                "input_ids": torch.tensor(input_ids, dtype=torch.long).to(device=self.device, non_blocking=True),
+                "attention_mask": torch.tensor(attention_mask, dtype=torch.bool).to(device=self.device, non_blocking=True),
             }
         except Exception as e:
             print(f"Warning: Failed to tokenize text: {e}")
             # Return padded sequence on error
             return {
-                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
-                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
+                "input_ids": torch.full((self.sequence_length,), self.pad_token_id, dtype=torch.long).to(device=self.device, non_blocking=True),
+                "attention_mask": torch.zeros(self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True)
             }
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
@@ -444,8 +438,8 @@ class MultiBoundedStreamingDataset(IterableDataset):
         """Stack individual samples into a batch."""
         if not samples:
             return {
-                "input_ids": torch.empty(0, self.sequence_length, dtype=torch.long).to(device=self.device, non_blocking=True).unsqueeze(0),
-                "attention_mask": torch.empty(0, self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True).unsqueeze(0)
+                "input_ids": torch.empty(0, self.sequence_length, dtype=torch.long).to(device=self.device, non_blocking=True),
+                "attention_mask": torch.empty(0, self.sequence_length, dtype=torch.bool).to(device=self.device, non_blocking=True)
             }
 
         return {

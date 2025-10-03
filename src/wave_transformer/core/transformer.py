@@ -1,4 +1,6 @@
+import json
 import math
+import os
 from pathlib import Path
 
 from typing import Any, Union
@@ -370,27 +372,7 @@ class PositionWiseFeedForward(nn.Module):
         x = self.dropout(x)
         return self.linear2(x)
 
-class NonCausalParallelBlock(nn.Module):
-    """
-    Parallel attention and FFN from GPT-J/PaLM
-    Reduces latency by computing attention and FFN in parallel
-    """
-    def __init__(self, d_model, n_heads, n_heads_kv, d_ff, dropout=0.1, use_flash=True):
-        super().__init__()
 
-        self.norm = RMSNorm(d_model)
-        self.attn = FlashAttention(d_model, n_heads, dropout=dropout, use_flash=use_flash)
-        self.ffn = SwiGLU(d_model, d_ff, dropout)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, attention_mask):
-        # Single normalization, then parallel paths
-        normalized = self.norm(x)
-        attn_out = self.attn(normalized, False)
-        ffn_out = self.ffn(normalized)
-
-        # Combine and add residual
-        return x + self.dropout(attn_out + ffn_out)
 
 class WaveTransformer(nn.Module):
     def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6,
@@ -438,38 +420,64 @@ class WaveTransformer(nn.Module):
             return output, wave
         return output
 
-    def save(self, path: Union[str, Path]):
-        """Save model state and configuration."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def save(self, model_dir: Union[str, Path]):
+        """Save model state and configuration, including encoder and decoder."""
+        path = Path(model_dir)
+        path.mkdir(parents=True, exist_ok=True)
 
-        checkpoint = {
-            'state_dict': self.state_dict(),
-            'config': {
-                'num_harmonics': self.num_harmonics,
-                'transformer_num_layers': len(self.layers),
-                'transformer_num_heads': self.layers[0].attn.n_heads,
-                'transformer_heads_kv': self.layers[0].attn.n_heads,  # Assuming same as n_heads
-                'transformer_d_ff_multi': self.layers[0].ffn.w1.out_features // self.input_dim,
-                'dropout': self.layers[0].dropout.p,
-                'use_flash': self.layers[0].attn.use_flash,
-            }
+        config_path = path / 'transformer_config.json'
+        checkpoint_path = path / 'transformer_state_dict.pt'
+
+        config = {
+            'num_harmonics': self.num_harmonics,
+            'transformer_num_layers': len(self.layers),
+            'transformer_num_heads': self.layers[0].attn.n_heads,
+            'transformer_heads_kv': self.layers[0].attn.n_heads_kv,
+            'transformer_d_ff_multi': self.layers[0].ffn.w1.out_features // self.input_dim,
+            'dropout': self.layers[0].dropout.p,
+            'use_flash': self.layers[0].attn.use_flash,
         }
 
-        torch.save(checkpoint, path)
+        checkpoint = {
+            'transformer_state_dict': self.state_dict(),
+        }
+
+        with open(config_path, 'w', encoding="utf-8") as f:
+            json.dump(config, f)
+        torch.save(checkpoint, checkpoint_path)
+
+        # Save encoder and decoder
+        self.wave_encoder.save(path / 'encoder')
+        self.wave_decoder.save(path / 'decoder')
 
     @classmethod
-    def load(cls, path: Union[str, Path], wave_encoder, wave_decoder, map_location=None):
-        """Load model from checkpoint."""
-        checkpoint = torch.load(path, map_location=map_location)
+    def load(cls, model_dir: Union[str, Path], encoder_cls, decoder_cls, map_location=None):
+        """Load model from directory, including encoder and decoder."""
+        if os.path.exists(model_dir) and os.path.isdir(model_dir):
+            path = Path(model_dir)
 
-        config = checkpoint['config']
-        model = cls(
-            wave_encoder=wave_encoder,
-            wave_decoder=wave_decoder,
-            **config
-        )
+            config_path = path / 'transformer_config.json'
+            checkpoint_path = path / 'transformer_state_dict.pt'
 
-        model.load_state_dict(checkpoint['state_dict'])
-        return model
+            # Load encoder and decoder
+            wave_encoder = encoder_cls.load(path / 'encoder', map_location=map_location)
+            wave_decoder = decoder_cls.load(path / 'decoder', map_location=map_location)
+
+            # Load transformer config and create model
+            with open(config_path, 'r', encoding="utf-8") as f:
+                config = json.load(f)
+
+            model = cls(
+                wave_encoder=wave_encoder,
+                wave_decoder=wave_decoder,
+                **config
+            )
+
+            # Load transformer state dict
+            checkpoint = torch.load(checkpoint_path, map_location=map_location)
+            model.load_state_dict(checkpoint['transformer_state_dict'])
+
+            return model
+        else:
+            raise FileNotFoundError
 

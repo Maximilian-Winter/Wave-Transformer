@@ -15,6 +15,7 @@ It introduces frequency, amplitude, and phase components into the transformer pi
 pip install torch torchvision
 pip install datasets tokenizers
 pip install flash-attn --no-build-isolation   # Optional: FlashAttention support
+git clone https://github.com/Maximilian-Winter/Wave-Transformer.git
 cd Wave-Transformer
 pip install .
 ````

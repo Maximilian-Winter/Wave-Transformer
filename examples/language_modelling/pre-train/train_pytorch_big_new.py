@@ -165,9 +165,9 @@ def train_language_model():
     os.makedirs(result_dir, exist_ok=True)
     print(f"Result directory: {result_dir}")
     # Model Parameters
-    seq_len = 256
+    seq_len = 512
     d_model = 512
-    num_layers = 4
+    num_layers = 32
     num_heads = 8
     dropout = 0.1
     num_harmonics = 64

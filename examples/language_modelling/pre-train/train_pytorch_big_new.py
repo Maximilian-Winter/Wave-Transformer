@@ -173,13 +173,13 @@ def train_language_model():
     num_harmonics = 64
 
     # Hyperparameters
-    epochs = 20
+    epochs = 5
     batch_size = 32
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
     final_lr = 5e-5
-    warmup_pct = 0.03
+    warmup_pct = 0.25
 
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 
@@ -194,47 +194,31 @@ def train_language_model():
     vocab_size = tokenizer.get_vocab_size()
     torch.set_float32_matmul_precision('high')
 
-    def load_dao_teachings():
-        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
-            chapters = json.load(file)
-        random.shuffle(chapters)
-        random.shuffle(chapters)
-        texts = [chapter["text"] for chapter in chapters]
-        factor = int(len(texts) * 0.97)
-        train_corpus = texts[:factor]
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        eval_corpus = texts[factor:]
-        train_corpus = train_corpus * 100
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        random.shuffle(train_corpus)
-        return train_corpus, eval_corpus
+    dataset_specs = [
+        {"name": "wikimedia/wikipedia", "subset": "20231101.en", "skip": 0, "max_entries": 400_000, "weight": 0.4},
+        {"name": "roneneldan/TinyStories", "skip": 0, "max_entries": 100_000, "weight": 0.1},
+        {"name": "HuggingFaceFW/fineweb", "skip": 1000, "max_entries": 500_000, "weight": 0.5},
+    ]
+    with open("prepared_datasets/train_dataset_prepared.json", "r") as f:
+        prepared_datasets = json.load(f)
 
-    train_corpus, eval_corpus = load_dao_teachings()
-    avg_train_length = 0
-    max_train_length = -1
-    min_train_length = 10000
-    for train_text in train_corpus:
-        train_length = len(tokenizer.encode(train_text).ids)
-        avg_train_length += train_length
-        max_train_length = max(max_train_length, train_length)
-        min_train_length = min(min_train_length, train_length)
-
-    avg_train_length = avg_train_length / len(train_corpus)
-    print(f"Train length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
-    train_dataset = TextDatasetPadded(train_corpus, tokenizer, pad_token_id, seq_len, device=device)
-    eval_dataset = TextDatasetPadded(eval_corpus, tokenizer, pad_token_id, seq_len, device=device)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    train_dataset = MultiBoundedStreamingDataset(dataset_specs, tokenizer, pad_token_id, seq_len, device=device,
+                                                 preloaded_data=prepared_datasets)
+    with open("prepared_datasets/eval_dataset_prepared.json", "r") as f:
+        eval_dataset = json.load(f)
+    eval_dataset = BoundedStreamingDataset("HuggingFaceFW/fineweb", tokenizer, pad_token_id, seq_len,
+                                           max_entries=5000, skip_first=500_000, device=device, preloaded_data=eval_dataset)
+    print("Prepared Datasets loaded...")
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, drop_last=False)
+    print("Datasets loaded...")
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model,
+                                      dropout=dropout, max_seq_len=seq_len)
 
-    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=4, d_model=d_model)
-
-    wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model, hidden_mult=2.0, num_heads=8, num_layers=3,
-                                 low_rank_output=512)
+    wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model,
+                                      hidden_mult=2.0, num_heads=8, num_layers=3,
+                                      low_rank_output=512)
+    print("Creating model...")
     # Model
     wave_transformer_model = WaveTransformer(
         wave_encoder=wave_encoder,

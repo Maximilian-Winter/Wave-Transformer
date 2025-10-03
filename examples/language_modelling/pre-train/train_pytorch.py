@@ -17,7 +17,7 @@ from wave_transformer.core.transformer import WaveTransformer
 
 from wave_transformer.language_modelling.text_datasets import MultiBoundedStreamingDataset, BoundedStreamingDataset, TextDatasetPadded
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoderSimple
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 
 from wave_transformer.language_modelling.train_utils import prepare_autoregressive_batch, compute_language_modeling_loss, \
     cosine_schedule_with_warmup, camel_to_snake, extract_architecture_details, test_generation, diversity_report, \
@@ -237,7 +237,7 @@ def train_language_model(big_training: bool = False):
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         eval_loader = DataLoader(eval_dataset, batch_size=eval_batch_size, drop_last=False)
 
-    wave_encoder = TokenToWaveEncoderSimple(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=2, d_model=d_model)
+    wave_encoder = TokenToWaveEncoder(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=2, d_model=d_model)
 
     wave_decoder = WaveToTokenDecoder(vocab_size=vocab_size, num_harmonics=num_harmonics, d_model=d_model, hidden_mult=2.0, num_heads=8, num_layers=3,
                                  low_rank_output=512)

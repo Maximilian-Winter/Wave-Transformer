@@ -127,7 +127,7 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
     return tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
 
 
-def test_generation(model, tokenizer, max_tokens, device, prompts=None):
+def test_generation(model, tokenizer, max_tokens=50, device="cuda", temperature=0.4, top_p=1.0, repetition_penalty=1.0, prompts=None):
     # Generate samples
     if prompts is None:
         prompts = [
@@ -142,7 +142,7 @@ def test_generation(model, tokenizer, max_tokens, device, prompts=None):
     for prompt in prompts:
         text = generate_text(
             model, tokenizer,
-            prompt, device, max_tokens=max_tokens, temperature=0.0, top_p=1.0, repetition_penalty=1.0
+            prompt, device, max_tokens=max_tokens, temperature=temperature, top_p=top_p, repetition_penalty=repetition_penalty,
         )
         print(f"\n\nInput: '{prompt}'\nResult: '{text}'")
         generations.append(text)

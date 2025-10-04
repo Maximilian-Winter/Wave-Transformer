@@ -399,12 +399,12 @@ def train_language_model_distributed(rank, world_size):
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 3
+    epochs = 2
     batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
-    final_lr = 3e-5
+    final_lr = 5e-5
     warmup_pct = 0.1
 
     # Initialize wandb (only on rank 0)
@@ -434,7 +434,7 @@ def train_language_model_distributed(rank, world_size):
     # Load tokenizer
     model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
     train_tokenizer = Tokenizer.from_file(model_name)
-    seq_len = 128
+
     train_tokenizer.add_special_tokens(["<|bos|>", "<|eos|>", "<|pad|>"])
 
     bos_token_id = train_tokenizer.token_to_id("<|bos|>")
@@ -463,22 +463,15 @@ def train_language_model_distributed(rank, world_size):
 
     vocab_size = train_tokenizer.get_vocab_size()
 
-    entries_per_dataset = 250_000
+    entries_per_dataset = 1_500_000
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
         BoundedStreamingDataset(
-            repo_id="wikimedia/wikipedia",
-            subset="20231101.en",
-            skip_first=0,
-            max_entries=500_000,
-            weight=0.5
-        ),
-        BoundedStreamingDataset(
             repo_id="HuggingFaceFW/fineweb",
             subset="sample-10BT",
             skip_first=0,
-            max_entries=500_000,
+            max_entries=entries_per_dataset,
             weight=0.5
         ),
     ]
@@ -531,7 +524,7 @@ def train_language_model_distributed(rank, world_size):
     wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        num_layers=4,
+        num_layers=3,
         d_model=d_model,
         dropout=dropout,
         max_seq_len=seq_len
@@ -541,8 +534,9 @@ def train_language_model_distributed(rank, world_size):
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
         d_model=d_model,
-        hidden_mult=1.75,
+        hidden_mult=2.0,
         num_heads=8,
+        num_heads_kv=8,
         num_layers=3,
         low_rank_output=512
     )
@@ -556,7 +550,7 @@ def train_language_model_distributed(rank, world_size):
         wave_decoder=wave_decoder,
         num_harmonics=num_harmonics,
         transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads // 2,
+        transformer_heads_kv=num_heads,
         transformer_num_layers=num_layers,
         transformer_d_ff_multi=4,
         dropout=dropout

@@ -37,6 +37,13 @@ Efficient data structures for long-running experiments:
 - ExponentialMovingAverage: Smoothed metrics
 - SlidingWindowStatistics: Recent history stats
 
+### Generation Analysis (`wave_transformer.analysis.generation`)
+Comprehensive tools for analyzing autoregressive generation:
+- LiveGenerationVisualizer: Real-time wave evolution during generation
+- WaveTrajectoryTracker: Track wave statistics across generation steps
+- GenerationConfidenceTracker: Monitor model confidence and uncertainty
+- RoundTripAnalyzer: Token-wave-token reconstruction analysis
+
 ## Quick Start
 
 ```python
@@ -91,13 +98,17 @@ from .core import (
     NumpyEncoder,
 )
 
-# Import memory-efficient utilities
+# Import memory-efficient utilities and configuration
 from .utils import (
     CircularBuffer,
     DownsampledStorage,
     StreamingStatistics,
     ExponentialMovingAverage,
     SlidingWindowStatistics,
+    AnalysisConfig,
+    create_default_config,
+    create_minimal_config,
+    create_full_config,
 )
 
 # Import training monitoring components
@@ -124,6 +135,30 @@ from .utils.distributed_utils import (
     DistributedMetricsAggregator,
     main_process_only,
     synchronized,
+)
+
+# Import comparative analysis components
+from .comparative import (
+    CheckpointComparator,
+    InputComparator,
+    AblationHelper,
+)
+
+# Import generation analysis components
+from .generation import (
+    LiveGenerationVisualizer,
+    WaveTrajectoryTracker,
+    GenerationConfidenceTracker,
+    RoundTripAnalyzer,
+)
+
+# Import visualization and reporting components
+from .visualization import (
+    WaveTensorBoardWriter,
+    WaveWandbLogger,
+    PaperReportGenerator,
+    PublicationStyle,
+    FigureConfig,
 )
 
 __version__ = '0.1.0'
@@ -158,6 +193,12 @@ __all__ = [
     'ExponentialMovingAverage',
     'SlidingWindowStatistics',
 
+    # Configuration
+    'AnalysisConfig',
+    'create_default_config',
+    'create_minimal_config',
+    'create_full_config',
+
     # Training Hooks
     'HookStorage',
     'WaveForwardHook',
@@ -180,4 +221,22 @@ __all__ = [
     'DistributedMetricsAggregator',
     'main_process_only',
     'synchronized',
+
+    # Comparative Analysis
+    'CheckpointComparator',
+    'InputComparator',
+    'AblationHelper',
+
+    # Generation Analysis
+    'LiveGenerationVisualizer',
+    'WaveTrajectoryTracker',
+    'GenerationConfidenceTracker',
+    'RoundTripAnalyzer',
+
+    # Visualization and Reporting
+    'WaveTensorBoardWriter',
+    'WaveWandbLogger',
+    'PaperReportGenerator',
+    'PublicationStyle',
+    'FigureConfig',
 ]

@@ -1,0 +1,110 @@
+# Example Analysis Configuration for Wave Transformer
+# This configuration file demonstrates all available options for the analysis suite
+
+# ============================================================================
+# General Settings
+# ============================================================================
+output_dir: "analysis_results"
+experiment_name: "wave_transformer_analysis"
+enable_wave_tracking: true
+wave_sampling_rate: 0.1  # Sample 10% of batches
+random_seed: 42
+device: "cuda"
+
+# ============================================================================
+# Data Collector Configuration
+# ============================================================================
+collector:
+  enabled: true
+  sampling_rate: 1.0  # Collect 100% of sampled batches
+  max_samples_per_layer: 1000
+  track_gradients: false  # Enable for gradient analysis (higher memory)
+  store_full_waves: true  # Store complete wave objects
+  compute_statistics: true  # Compute wave statistics during collection
+
+# ============================================================================
+# Visualization Configuration
+# ============================================================================
+visualization:
+  # TensorBoard settings
+  use_tensorboard: true
+  tensorboard_log_dir: "runs/wave_analysis"
+  tb_flush_secs: 120
+
+  # Weights & Biases settings
+  use_wandb: false
+  wandb_project: "wave-transformer"
+  wandb_entity: null  # Set to your W&B username or team
+  wandb_tags:
+    - "wave-analysis"
+    - "transformer"
+
+  # General visualization settings
+  plot_frequency: 1000  # Steps between visualizations
+  save_figures: true
+  figure_format: "png"  # Options: png, pdf, svg, jpg
+  dpi: 150
+
+# ============================================================================
+# Introspection Configuration
+# ============================================================================
+introspection:
+  # Harmonic analysis
+  harmonic_importance_method: "energy"  # Options: energy, amplitude, variance
+  track_top_k_harmonics: 16
+
+  # Spectrum tracking
+  enable_spectrum_tracking: true
+  spectrum_snapshot_frequency: 5000
+
+  # Interference analysis
+  enable_interference_analysis: false  # Computationally expensive
+  interference_window_size: 10
+
+  # Layer analysis
+  enable_layer_analysis: true
+  layer_snapshot_frequency: 1000
+
+# ============================================================================
+# Training Monitoring Configuration
+# ============================================================================
+training:
+  # Hook settings
+  enable_hooks: true
+  hook_layers:
+    - "all"  # Or specify: ["encoder", "layer_0", "layer_1", etc.]
+
+  # Gradient monitoring
+  enable_gradient_monitoring: true
+  gradient_clip_threshold: null  # Set to enable gradient clipping visualization
+
+  # Callback settings
+  enable_callbacks: true
+  checkpoint_frequency: 5000
+  validation_frequency: 1000
+
+# ============================================================================
+# Export Configuration
+# ============================================================================
+export:
+  export_format: "hdf5"  # Options: hdf5, pickle, npz
+  compression: true
+  export_frequency: 10000
+  max_export_size_mb: 1000
+
+# ============================================================================
+# Memory Management Configuration
+# ============================================================================
+memory:
+  enable_memory_efficient_mode: false
+  chunk_size: 100
+  offload_to_cpu: false
+  clear_cache_frequency: 1000
+
+# ============================================================================
+# Custom Configuration
+# ============================================================================
+custom_config:
+  # Add any custom configuration here
+  model_specific_setting: "value"
+  custom_metric_threshold: 0.95

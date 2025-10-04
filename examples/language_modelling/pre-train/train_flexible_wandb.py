@@ -646,7 +646,10 @@ def train_language_model_distributed(rank, world_size):
 
     # Global step counter that persists across epochs
     global_step = [0]
-
+    prompts = [
+        "The tao that can be told",
+        "Success is as dangerous as failure."
+    ]
     # Training loop
     for epoch in range(epochs):
         # Train
@@ -672,10 +675,7 @@ def train_language_model_distributed(rank, world_size):
             generations = test_generation(
                 model_for_gen, tokenizer, 50,
                 device,
-                prompts=[
-                    "The tao that can be told",
-                    "Success is as dangerous as failure."
-                ]
+                prompts=prompts
             )
             diversity = diversity_report(generations)
 
@@ -702,8 +702,8 @@ def train_language_model_distributed(rank, world_size):
                 if generations:
                     generation_table = wandb.Table(
                         columns=["Epoch", "Prompt", "Generation"],
-                        data=[[epoch + 1, g.get('prompt', ''), g.get('text', '')]
-                              for g in generations[:5]]  # Log first 5 samples
+                        data=[[epoch + 1, prompt, generation]
+                              for prompt, generation in zip(prompts, generations)]  # Log first 5 samples
                     )
                     wandb.log({"generations": generation_table}, step=global_step[0])
 

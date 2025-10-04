@@ -2,18 +2,16 @@
 Hugging Face compatible WaveTransformer implementation
 """
 
-import torch
 import torch.nn as nn
-import numpy as np
-from typing import Optional, Tuple, Union
-from dataclasses import dataclass
+
+from typing import Optional
 
 from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.generation import GenerationMixin
 
 from wave_transformer.core.transformer import ParallelBlock, RMSNorm
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoderSlim
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 
 

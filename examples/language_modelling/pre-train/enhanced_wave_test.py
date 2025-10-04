@@ -13,6 +13,7 @@ import torch.multiprocessing as mp
 from tokenizers import processors, Tokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
+
 from wave_transformer.language_modelling.text_datasets import TextDatasetPaddedSimple
 
 import wandb
@@ -22,10 +23,10 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.transformer import WaveTransformer, ModernTransformer, WaveTransformerMKII
 from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 from wave_transformer.language_modelling.train_utils import (
     prepare_autoregressive_batch,
     compute_language_modeling_loss,
@@ -85,6 +86,7 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
 
     def __len__(self):
         return self.max_entries
+
     def __iter__(self):
         # Each GPU skips samples based on its rank
         for i, sample in enumerate(self.dataset):
@@ -148,7 +150,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         with torch.autocast("cuda", dtype=torch.bfloat16):
             logits = model({"token_ids": inputs}, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
-           
+
         if not torch.isfinite(loss):
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
@@ -219,9 +221,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 'lr': f"{current_lr:.2e}",
                 'step': global_step[0]
             })
-
-
-
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Completed {batch_count} batches total")
@@ -383,20 +382,19 @@ def train_language_model_distributed(rank, world_size):
     # Model Parameters
     seq_len = 512
     d_model = 512
-    num_layers = 64
+    num_layers = 12
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 32
+    num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
-    accumulation_steps = 1
+    accumulation_steps = 2
     base_lr = 3e-4
     final_lr = 3e-5
     warmup_pct = 0.1
-
 
     # Initialize wandb (only on rank 0)
     use_wandb = True
@@ -451,7 +449,6 @@ def train_language_model_distributed(rank, world_size):
     train_tokenizer.enable_padding(pad_id=pad_token_id, pad_token="<|pad|>", length=seq_len)
     train_tokenizer.enable_truncation(max_length=seq_len - 2)
 
-
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
@@ -473,7 +470,7 @@ def train_language_model_distributed(rank, world_size):
     avg_train_length = 0
     max_train_length = -1
     min_train_length = 10000
-    entries_per_dataset = len(train_corpus)
+
     cleaned_corpus = []
     for train_text in train_corpus:
         train_length = len(tokenizer.encode(train_text).ids)
@@ -516,43 +513,19 @@ def train_language_model_distributed(rank, world_size):
     if rank == 0:
         print("Dataloaders created...")
 
-    # Create model components
-    wave_encoder = TokenToWaveEncoderSlim(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=2,
-        num_heads=num_heads,
-        num_heads_kv=num_heads,
-        num_layers=3,
-        shared_projector=False
-    )
-
-    wave_decoder = WaveToTokenDecoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=1.75,
-        num_heads=8,
-        num_heads_kv=8,
-        num_layers=3,
-        low_rank_output=512
-    )
 
     if rank == 0:
         print("Creating model...")
     dtype = torch.float32
-
-    wave_transformer_model = WaveTransformer(
-        wave_encoder=wave_encoder,
-        wave_decoder=wave_decoder,
+    wave_encoder = TokenToWaveEncoder(
+        vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads,
-        transformer_num_layers=num_layers,
-        transformer_d_ff_multi=4,
-        dropout=dropout
-    ).to(device, dtype=dtype)
+        num_layers=3,
+        d_model=d_model,
+        dropout=dropout,
+        max_seq_len=seq_len
+    )
+    wave_transformer_model = WaveTransformerMKII(wave_encoder=wave_encoder, vocab_size=vocab_size, num_harmonics=num_harmonics, transformer_num_layers=num_layers, transformer_num_heads=num_heads, transformer_heads_kv=num_heads).to(device, dtype=dtype)
 
     # Wrap model with DDP if using multiple GPUs
     if use_ddp:

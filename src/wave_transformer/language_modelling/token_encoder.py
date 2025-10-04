@@ -165,7 +165,7 @@ class TokenToWaveEncoderSlim(nn.Module):
         x = self.embedding(token_ids)
 
         # Attention
-        attn_out = self.self_attention(x, False, attention_mask)
+        attn_out = self.self_attention(x, True, attention_mask)
         x = x + attn_out
 
         # Hidden expansion

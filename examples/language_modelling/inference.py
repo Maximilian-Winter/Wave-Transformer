@@ -6,13 +6,13 @@ from tokenizers.processors import TemplateProcessing
 
 from wave_transformer.core.transformer import WaveTransformer
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
 from wave_transformer.language_modelling.train_utils import generate_text, load_model_bundle, test_generation
 
 # Load model
 model = WaveTransformer.load(
-    "./results_fineweb/epoch_0_batch_24999",
-    encoder_cls=TokenToWaveEncoder,
+    "./results_wikitext_v1_raw/epoch_0_batch_9999",
+    encoder_cls=TokenToWaveEncoderSlim,
     decoder_cls=WaveToTokenDecoder,
     map_location=None
 )

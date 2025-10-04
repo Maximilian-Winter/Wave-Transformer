@@ -13,6 +13,10 @@ import torch.multiprocessing as mp
 from tokenizers import processors, Tokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
+
+from wave_transformer.language_modelling.enhanced_wave_transformer import EnhancedWaveTransformer
+from wave_transformer.language_modelling.text_datasets import TextDatasetPaddedSimple
+
 import wandb
 
 from torch import optim, nn
@@ -20,10 +24,10 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.transformer import WaveTransformer, ModernTransformer
 from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 from wave_transformer.language_modelling.train_utils import (
     prepare_autoregressive_batch,
     compute_language_modeling_loss,
@@ -83,6 +87,7 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
 
     def __len__(self):
         return self.max_entries
+
     def __iter__(self):
         # Each GPU skips samples based on its rank
         for i, sample in enumerate(self.dataset):
@@ -126,7 +131,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
     last_log_time = datetime.now()
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Starting iteration over dataloader")
-
+    current_lr = 0
     for batch_idx, raw_batch in enumerate(progress):
         batch_count += 1
 
@@ -144,9 +149,9 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": inputs}, attention_mask=input_mask)
+            logits = model(inputs)['logits']
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
-           
+
         if not torch.isfinite(loss):
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
@@ -162,10 +167,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         epoch_losses.append(loss_value)
         accumulated_loss += loss_value
 
-        # Step after accumulation - FIXED CONDITION
-        should_step = ((batch_idx + 1) % accumulation_steps == 0)
-
-        if should_step:
+        if ((batch_idx + 1) % accumulation_steps) == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -182,55 +184,44 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
             # Get current learning rate AFTER scheduler step
             current_lr = optimizer.param_groups[0]['lr']
 
-            # Debug learning rate
-            if batch_idx < 5 and rank == 0:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Step {global_step[0]}, LR = {current_lr:.6f}")
+        # Debug learning rate
+        if batch_idx < 5 and rank == 0:
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Step {global_step[0]}, LR = {current_lr:.6f}")
 
-            # Log to wandb (fixed modulo condition)
-            if rank == 0 and global_step[0] % 50 == 0 and use_wandb and wandb.run is not None:
-                wandb.log({
-                    'train/loss': loss_value,
-                    'train/perplexity': math.exp(loss_value),
-                    'train/learning_rate': current_lr,
-                    'train/global_step': global_step[0],
-                    'train/epoch': epoch,
-                    
-                }, step=global_step[0])
+        # Log to wandb (fixed modulo condition)
+        if rank == 0 and ((batch_idx + 1) % 50) == 0 and use_wandb and wandb.run is not None:
+            wandb.log({
+                'train/loss': loss_value,
+                'train/perplexity': math.exp(loss_value),
+                'train/learning_rate': current_lr,
+                'train/global_step': global_step[0],
+                'train/epoch': epoch,
 
-            # Save checkpoint
-            if rank == 0 and global_step[0] % 5000 == 0:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Saving checkpoint at step {global_step[0]}")
-                model_to_save = model.module if use_ddp else model
-                save_model_bundle(
-                    model_to_save,
-                    f"{result_dir}/epoch_{epoch}_batch_{batch_idx}",
-                    epoch,
-                    global_step=global_step[0]
-                )
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
+            }, step=global_step[0])
 
-            # Update progress bar with current learning rate
-            if rank == 0:
-                progress.set_postfix({
-                    'loss': f"{loss_value:.4f}",
-                    
-                    'ppl': f"{math.exp(loss_value):.2f}",
-                    'lr': f"{current_lr:.2e}",
-                    'step': global_step[0]
-                })
-        else:
-            # Update progress bar without LR when not stepping
-            if rank == 0:
-                progress.set_postfix({
-                    'loss': f"{loss_value:.4f}",
-                   
-                    'ppl': f"{math.exp(loss_value):.2f}",
-                    'step': global_step[0]
-                })
+        # Save checkpoint
+        if rank == 0 and ((batch_idx + 1) % 5000) == 0:
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Saving checkpoint at step {global_step[0]}")
+            model_to_save = model.module if use_ddp else model
+            save_model_bundle(
+                model_to_save,
+                f"{result_dir}/epoch_{epoch}_batch_{batch_idx}",
+                epoch,
+                global_step=global_step[0]
+            )
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
 
+        # Update progress bar with current learning rate
+        if rank == 0:
+            progress.set_postfix({
+                'loss': f"{loss_value:.4f}",
 
+                'ppl': f"{math.exp(loss_value):.2f}",
+                'lr': f"{current_lr:.2e}",
+                'step': global_step[0]
+            })
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Completed {batch_count} batches total")
@@ -390,20 +381,20 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
+    seq_len = 1024
     d_model = 512
-    num_layers = 32
+    num_layers = 12
     num_heads = 8
     dropout = 0.1
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 2
-    batch_size = 16 if torch.cuda.is_available() else 4
+    epochs = 5
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
-    accumulation_steps = 1
+    accumulation_steps = 2
     base_lr = 3e-4
-    final_lr = 5e-5
+    final_lr = 3e-5
     warmup_pct = 0.1
 
     # Initialize wandb (only on rank 0)
@@ -459,42 +450,46 @@ def train_language_model_distributed(rank, world_size):
     train_tokenizer.enable_padding(pad_id=pad_token_id, pad_token="<|pad|>", length=seq_len)
     train_tokenizer.enable_truncation(max_length=seq_len - 2)
 
-
     vocab_size = train_tokenizer.get_vocab_size()
 
-    entries_per_dataset = 2_500_000
+    def load_dao_teachings():
+        with open("corpus.json", "r", encoding="utf-8") as file:
+            chapters = json.load(file)
+        random.shuffle(chapters)
+        random.shuffle(chapters)
+        texts = [chapter["text"] for chapter in chapters]
+        factor = int(len(texts) * 0.97)
+        train_corpus = texts
+        random.shuffle(train_corpus)
+        random.shuffle(train_corpus)
+        random.shuffle(train_corpus)
+        random.shuffle(train_corpus)
+        eval_corpus = None
+        return train_corpus, eval_corpus
 
-    # Fix dataset creation - use same dataset for all ranks
-    dataset_specs = [
-        BoundedStreamingDataset(
-            repo_id= "wikitext",
-            subset="wikitext-103-raw-v1",
-            skip_first=0,
-            max_entries=entries_per_dataset,
-            weight=1.0
-        ),
+    train_corpus, eval_corpus = load_dao_teachings()
+    avg_train_length = 0
+    max_train_length = -1
+    min_train_length = 10000
+
+    cleaned_corpus = []
+    for train_text in train_corpus:
+        train_length = len(tokenizer.encode(train_text).ids)
+        if train_length >= 6:
+            cleaned_corpus.append(train_text)
+            avg_train_length += train_length
+            max_train_length = max(max_train_length, train_length)
+            min_train_length = min(min_train_length, train_length)
+    entries_per_dataset = len(cleaned_corpus)
+    avg_train_length = avg_train_length / len(train_corpus)
+    print(
+        f"Dataset Entries: {entries_per_dataset}, Average length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
+    train_dataset = TextDatasetPaddedSimple(train_corpus, train_tokenizer, pad_token_id, seq_len)
+
+    prompts = [
+        "The tao that can be told",
+        "Success is as dangerous as failure."
     ]
-
-    train_dataset = MultiBoundedStreamingDataset(
-        dataset_specs=dataset_specs,
-        tokenizer=train_tokenizer,
-        pad_token_id=pad_token_id,
-        sequence_length=seq_len,
-        batch_size=batch_size,
-        prefetch_batches=256,        # from 1024  → shrink reservoir (stop 100% q)
-        prefetch_chunk_batches=16,   # from 32    → quicker, more frequent refills
-        tokenizer_batch_size=512,    # from 256   → fewer tokenizer calls (watch CPU)
-        weighted_sampling=False,
-        global_max_entries=None,
-        seed=42,
-        move_to_device=False,
-        device=None,
-        debug=False,  # <-- enable periodic prints
-        log_interval_s=5.0,
-        stats_window_s=60.0,
-    )
-
-
     # Use wrapper for distribution
     if use_ddp:
         train_dataset_wrapped = DistributedIterableWrapper(
@@ -519,42 +514,12 @@ def train_language_model_distributed(rank, world_size):
     if rank == 0:
         print("Dataloaders created...")
 
-    # Create model components
-    wave_encoder = TokenToWaveEncoderSlim(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        num_layers=3,
-        d_model=d_model,
-        num_heads=8,
-        num_heads_kv=8,
-        shared_projector=False
-    )
-
-    wave_decoder = WaveToTokenDecoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=2.0,
-        num_heads=8,
-        num_heads_kv=8,
-        num_layers=3,
-        low_rank_output=512
-    )
 
     if rank == 0:
         print("Creating model...")
     dtype = torch.float32
 
-    wave_transformer_model = WaveTransformer(
-        wave_encoder=wave_encoder,
-        wave_decoder=wave_decoder,
-        num_harmonics=num_harmonics,
-        transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads,
-        transformer_num_layers=num_layers,
-        transformer_d_ff_multi=4,
-        dropout=dropout
-    ).to(device, dtype=dtype)
+    wave_transformer_model = EnhancedWaveTransformer(vocab_size=vocab_size, num_harmonics=num_harmonics, num_layers=num_layers, num_heads=num_heads, encoder_d_model=d_model, decoder_d_model=d_model).to(device, dtype=dtype)
 
     # Wrap model with DDP if using multiple GPUs
     if use_ddp:
@@ -672,10 +637,7 @@ def train_language_model_distributed(rank, world_size):
             generations = test_generation(
                 model_for_gen, tokenizer, 50,
                 device,
-                prompts=[
-                    "The tao that can be told",
-                    "Success is as dangerous as failure."
-                ]
+                prompts=prompts
             )
             diversity = diversity_report(generations)
 
@@ -702,8 +664,8 @@ def train_language_model_distributed(rank, world_size):
                 if generations:
                     generation_table = wandb.Table(
                         columns=["Epoch", "Prompt", "Generation"],
-                        data=[[epoch + 1, g.get('prompt', ''), g.get('text', '')]
-                              for g in generations[:5]]  # Log first 5 samples
+                        data=[[epoch + 1, prompt, generation]
+                              for prompt, generation in zip(prompts, generations)]  # Log first 5 samples
                     )
                     wandb.log({"generations": generation_table}, step=global_step[0])
 

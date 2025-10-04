@@ -25,7 +25,7 @@ def main():
     # Model configuration
     config = WaveTransformerConfig(
         vocab_size=tokenizer.vocab_size,
-        num_layers=32,
+        num_layers=48,
         num_heads=8,
         num_harmonics=64,
         max_seq_len=512,
@@ -83,19 +83,19 @@ def main():
         run_name=f"wave_transformer_dao_{timestamp}",  # also tag run name
         per_device_train_batch_size=4,
         gradient_accumulation_steps=1,
-        learning_rate=3e-4,  # safer than 5e-4, less risk of NaNs
+        learning_rate=5e-4,  # safer than 5e-4, less risk of NaNs
         weight_decay=0.05,  # lower, prevents over-regularizing
         adam_beta1=0.9,
         adam_beta2=0.95,
         adam_epsilon=1e-8,
-        warmup_ratio=0.1,
+        warmup_ratio=0.25,
         num_train_epochs=2,
         lr_scheduler_type="cosine",  # optional: periodic cosine annealing
         bf16=torch.cuda.is_available(),  # efficient if GPU supports it
         tf32=True,
         #dataloader_num_workers=2,
         #dataloader_pin_memory=True,
-        logging_steps=50,  # more frequent logging
+        logging_steps=100,  # more frequent logging
         save_strategy="epoch",  # save each epoch
         save_total_limit=10,  # keep last 3 checkpoints
         report_to=[],

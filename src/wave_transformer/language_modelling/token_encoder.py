@@ -127,8 +127,16 @@ class TokenToWaveEncoderSlim(nn.Module):
     ):
         super().__init__()
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.vocab_size = vocab_size
         self.num_harmonics = num_harmonics
+        self.d_model = d_model
+        self.hidden_mult = hidden_mult
+        self.num_heads = num_heads
+        self.num_heads_kv = num_heads_kv
+        self.num_layers = num_layers
+        self.shared_projector = shared_projector
+
+        self.embedding = nn.Embedding(vocab_size, d_model)
         hidden_dim = int(d_model * hidden_mult)
 
         # Attention + projection
@@ -152,8 +160,6 @@ class TokenToWaveEncoderSlim(nn.Module):
             self.freq_projector = nn.Linear(hidden_dim, num_harmonics)
             self.amp_projector = nn.Linear(hidden_dim, num_harmonics)
             self.phase_projector = nn.Linear(hidden_dim, num_harmonics)
-
-        self.shared_projector = shared_projector
 
     def forward(self, token_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         x = self.embedding(token_ids)
@@ -183,3 +189,46 @@ class TokenToWaveEncoderSlim(nn.Module):
         phases = torch.tanh(p) * np.pi                  # [-π, π]
 
         return Wave(frequencies, amplitudes, phases)
+
+    def save(self, model_dir: Union[str, Path]):
+        """Save encoder state and configuration."""
+        path = Path(model_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        config_path = path / 'encoder_slim_config.json'
+        checkpoint_path = path / 'encoder_slim_state_dict.pt'
+        config = {
+            'vocab_size': self.vocab_size,
+            'num_harmonics': self.num_harmonics,
+            'd_model': self.d_model,
+            'hidden_mult': self.hidden_mult,
+            'num_heads': self.num_heads,
+            'num_heads_kv': self.num_heads_kv,
+            'num_layers': self.num_layers,
+            'shared_projector': self.shared_projector,
+        }
+        checkpoint = {
+            'encoder_state_dict': self.state_dict(),
+        }
+        with open(config_path, 'w', encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+        torch.save(checkpoint, checkpoint_path)
+
+    @classmethod
+    def load(cls, model_dir: Union[str, Path], map_location=None):
+        """Load encoder from model directory."""
+        if os.path.exists(model_dir) and os.path.isdir(model_dir):
+            path = Path(model_dir)
+
+            config_path = path / 'encoder_slim_config.json'
+            checkpoint_path = path / 'encoder_slim_state_dict.pt'
+
+            with open(config_path, 'r', encoding="utf-8") as f:
+                config = json.load(f)
+            model = cls(**config)
+
+            checkpoint = torch.load(checkpoint_path, map_location=map_location)
+            model.load_state_dict(checkpoint['encoder_state_dict'])
+
+            return model
+        else:
+            raise FileNotFoundError

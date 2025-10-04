@@ -18,6 +18,7 @@ dependencies = [
     "tokenizers",
     "datasets",
     "wandb",
+    "hf_transfer",
     "matplotlib>=3.10.6",
 ]
 

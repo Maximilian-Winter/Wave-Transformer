@@ -7,13 +7,11 @@ from typing import Any, Union
 
 import torch.nn as nn
 import torch.nn.functional as F
-from flash_attn import flash_attn_func
 from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
-from dataclasses import dataclass
+
 import torch
-import matplotlib.pyplot as plt
-import numpy as np
-from typing import Optional, List
+
+from typing import Optional
 
 
 class MultiQueryFlashAttention(nn.Module):

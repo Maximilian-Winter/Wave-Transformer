@@ -381,12 +381,12 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
+    seq_len = 256
     d_model = 512
     num_layers = 64
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 32
+    num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
@@ -455,13 +455,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
-        with open("corpus.json", "r", encoding="utf-8") as file:
+        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts
+        train_corpus = texts * 50
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)

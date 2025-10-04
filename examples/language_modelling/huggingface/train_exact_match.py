@@ -7,7 +7,7 @@ import random
 import torch
 from transformers import Trainer, TrainingArguments, AutoTokenizer, default_data_collator
 from datasets import Dataset
-from wave_transformer.language_modelling.hf_wave_transformer import WaveTransformerConfig, WaveTransformerForCausalLM
+from wave_transformer.huggingface.hf_wave_transformer import WaveTransformerConfig, WaveTransformerForCausalLM
 #from wave_transformer.language_modelling.train_utils import EffectiveLossCallback, GenerationCallback
 
 

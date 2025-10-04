@@ -8,7 +8,7 @@ from typing import Any, Union
 import torch.nn as nn
 import torch.nn.functional as F
 from flash_attn import flash_attn_func
-
+from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
 from dataclasses import dataclass
 import torch
 import matplotlib.pyplot as plt
@@ -205,6 +205,34 @@ class ParallelBlock(nn.Module):
         # Combine and add residual
         return x + self.dropout(attn_out + ffn_out)
 
+
+class ModernTransformer(nn.Module):
+    def __init__(self, vocab_size, d_model, num_layers, n_heads_q, n_heads_k, d_ff, dropout=0.0, max_seq_len=512,
+                 use_flash=True, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.positional_encoding = RotaryPositionEmbedding(d_model, max_seq_len)
+        self.layers = nn.ModuleList([
+            ParallelBlock(d_model=d_model, n_heads=n_heads_q,
+                          n_heads_kv=n_heads_k, d_ff=d_ff,
+                          dropout=dropout, use_flash=use_flash)
+            for _ in range(num_layers)
+        ])
+        self.out_proj = nn.Linear(d_model, vocab_size)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norms = nn.ModuleList([nn.LayerNorm(d_model)for _ in range(num_layers)])
+
+    def forward(self, x, causal=True, attention_mask=None):
+        x = self.embedding(x)
+        x = self.positional_encoding(x)
+
+        for layer, norm in zip(self.layers, self.layer_norms):
+            x_out = layer(x, causal=causal, attention_mask=attention_mask)
+            x = x + self.dropout(x_out)
+            x = norm(x)
+
+        x = self.out_proj(x)
+        return x
 
 class WaveTransformer(nn.Module):
     def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6,

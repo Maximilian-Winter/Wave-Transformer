@@ -52,9 +52,6 @@ class TokenToWaveEncoder(nn.Module):
                                               dropout, num_harmonics, num_layers, use_flash)
         self.phase_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                                 dropout, num_harmonics, num_layers, use_flash)
-        self.pre_freq_norm = nn.LayerNorm(d_model)
-        self.pre_amp_norm = nn.LayerNorm(d_model)
-        self.pre_phase_norm = nn.LayerNorm(d_model)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):
         x = self.embedding(token_ids)

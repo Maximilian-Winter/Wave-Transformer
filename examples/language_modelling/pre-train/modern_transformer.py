@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.transformer import WaveTransformer, ModernTransformer
 from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
@@ -85,6 +85,7 @@ class DistributedIterableWrapper(torch.utils.data.IterableDataset):
 
     def __len__(self):
         return self.max_entries
+
     def __iter__(self):
         # Each GPU skips samples based on its rank
         for i, sample in enumerate(self.dataset):
@@ -146,9 +147,9 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": inputs}, attention_mask=input_mask)
+            logits = model(inputs, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
-           
+
         if not torch.isfinite(loss):
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Loss is NaN/Inf at batch {batch_idx}, skipping")
@@ -219,9 +220,6 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
                 'lr': f"{current_lr:.2e}",
                 'step': global_step[0]
             })
-
-
-
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Completed {batch_count} batches total")
@@ -383,7 +381,7 @@ def train_language_model_distributed(rank, world_size):
     # Model Parameters
     seq_len = 2048
     d_model = 512
-    num_layers = 24
+    num_layers = 12
     num_heads = 8
     dropout = 0.025
     num_harmonics = 64
@@ -449,7 +447,6 @@ def train_language_model_distributed(rank, world_size):
     )
     train_tokenizer.enable_padding(pad_id=pad_token_id, pad_token="<|pad|>", length=seq_len)
     train_tokenizer.enable_truncation(max_length=seq_len - 2)
-
 
     vocab_size = train_tokenizer.get_vocab_size()
 
@@ -540,16 +537,7 @@ def train_language_model_distributed(rank, world_size):
         print("Creating model...")
     dtype = torch.float32
 
-    wave_transformer_model = WaveTransformer(
-        wave_encoder=wave_encoder,
-        wave_decoder=wave_decoder,
-        num_harmonics=num_harmonics,
-        transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads,
-        transformer_num_layers=num_layers,
-        transformer_d_ff_multi=4,
-        dropout=dropout
-    ).to(device, dtype=dtype)
+    wave_transformer_model = ModernTransformer(vocab_size=vocab_size, d_model=d_model, num_layers=num_layers, n_heads_q=num_heads, n_heads_k=num_heads, d_ff=d_model * 4, max_seq_len=seq_len).to(device, dtype=dtype)
 
     # Wrap model with DDP if using multiple GPUs
     if use_ddp:

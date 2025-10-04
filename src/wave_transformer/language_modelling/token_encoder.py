@@ -58,7 +58,7 @@ class TokenToWaveEncoder(nn.Module):
                                                 dropout, num_harmonics, num_layers, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):
-        x = self.token_embedding(token_ids) * self.scale
+        x = self.embedding(token_ids) * self.scale
 
         f = self.freq_generator(x, attention_mask)
         a = self.amp_generator(x, attention_mask)

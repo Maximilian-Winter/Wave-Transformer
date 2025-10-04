@@ -40,7 +40,7 @@ class WaveToTokenDecoder(nn.Module):
         hidden_dim = int(d_model * hidden_mult)
 
         self.input_projection = nn.Linear(input_dim, d_model)
-        self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv, self.dropout, use_flash=use_flash)
+        self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv, self.dropout, use_yarn=True, use_flash=use_flash)
         self.hidden_projection = nn.Linear(d_model, hidden_dim)
 
         self.decoder_layers = nn.ModuleList([

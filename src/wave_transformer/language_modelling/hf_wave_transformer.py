@@ -13,7 +13,7 @@ from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.generation import GenerationMixin
 
 from wave_transformer.core.transformer import ParallelBlock, RMSNorm
-from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
+from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 
 
@@ -23,28 +23,28 @@ class WaveTransformerConfig(PretrainedConfig):
     model_type = "wave_transformer"
 
     def __init__(
-        self,
-        vocab_size=50257,
-        num_layers=3,
-        num_heads=8,
-        dropout=0.1,
-        max_seq_len=5000,
-        num_harmonics=64,
-        encoder_d_model=256,
-        encoder_hidden_mult=2.0,
-        encoder_num_heads=4,
-        encoder_num_layers=2,
-        decoder_d_model=256,
-        decoder_hidden_mult=1.5,
-        decoder_num_heads=4,
-        decoder_num_layers=2,
-        decoder_low_rank_output=None,
-        use_flash=False,
-        pad_token_id=0,
-        bos_token_id=1,
-        eos_token_id=2,
-        tie_word_embeddings=False,
-        **kwargs
+            self,
+            vocab_size=50257,
+            num_layers=3,
+            num_heads=8,
+            dropout=0.1,
+            max_seq_len=5000,
+            num_harmonics=64,
+            encoder_d_model=256,
+            encoder_hidden_mult=2.0,
+            encoder_num_heads=4,
+            encoder_num_layers=2,
+            decoder_d_model=256,
+            decoder_hidden_mult=1.5,
+            decoder_num_heads=4,
+            decoder_num_layers=2,
+            decoder_low_rank_output=None,
+            use_flash=False,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            tie_word_embeddings=False,
+            **kwargs
     ):
         super().__init__(
             pad_token_id=pad_token_id,
@@ -76,7 +76,6 @@ class WaveTransformerConfig(PretrainedConfig):
         self.use_flash = use_flash
 
 
-
 class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
     """
     WaveTransformer model for causal language modeling, compatible with HF Trainer
@@ -92,14 +91,24 @@ class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
         self.config = config
 
         # Initialize wave encoder
-        self.wave_encoder = TokenToWaveEncoder(
+        self.wave_encoder = TokenToWaveEncoderSlim(
             config.vocab_size,
-            config.encoder_d_model,
-            config.encoder_num_layers,
-            int(config.encoder_hidden_mult * config.encoder_d_model),
             config.num_harmonics,
-            use_flash=config.use_flash,
+            config.encoder_d_model,
+            config.encoder_hidden_mult,
+            config.encoder_num_heads,
+            config.encoder_num_heads,
+            config.encoder_num_layers,
+            False
         )
+        # self.wave_encoder = TokenToWaveEncoder(
+        #    config.vocab_size,
+        #    config.encoder_d_model,
+        #    config.encoder_num_layers,
+        #    int(config.encoder_hidden_mult * config.encoder_d_model),
+        #    config.num_harmonics,
+        #    use_flash=config.use_flash,
+        # )
 
         # Transformer layers
         input_dim = config.num_harmonics * 3
@@ -123,6 +132,7 @@ class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
             d_model=config.decoder_d_model,
             hidden_mult=config.decoder_hidden_mult,
             num_heads=config.decoder_num_heads,
+            num_heads_kv=config.decoder_num_heads,
             num_layers=config.decoder_num_layers,
             low_rank_output=config.decoder_low_rank_output,
             use_flash=config.use_flash,
@@ -188,12 +198,12 @@ class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
         )
 
     def prepare_inputs_for_generation(
-        self,
-        input_ids,
-        past_key_values=None,
-        attention_mask=None,
-        inputs_embeds=None,
-        **kwargs
+            self,
+            input_ids,
+            past_key_values=None,
+            attention_mask=None,
+            inputs_embeds=None,
+            **kwargs
     ):
         """Prepare inputs for generation (text generation support)"""
 

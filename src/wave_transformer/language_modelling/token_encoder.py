@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 from wave_transformer.core.wave import Wave
-from wave_transformer.core.transformer import ParallelBlock
+from wave_transformer.core.transformer import ParallelBlock, MultiQueryFlashAttention, RMSNorm
 from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
 
 class WaveEncoderBlock(nn.Module):
@@ -110,3 +110,76 @@ class TokenToWaveEncoder(nn.Module):
             return model
         else:
             raise FileNotFoundError
+
+
+# --- Slim Encoder ---
+class TokenToWaveEncoderSlim(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        num_harmonics: int = 64,
+        d_model: int = 256,
+        hidden_mult: float = 2.0,
+        num_heads: int = 4,
+        num_heads_kv: int = 4,
+        num_layers: int = 2,
+        shared_projector: bool = False,
+    ):
+        super().__init__()
+
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.num_harmonics = num_harmonics
+        hidden_dim = int(d_model * hidden_mult)
+
+        # Attention + projection
+        self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv)
+        self.input_projection = nn.Linear(d_model, hidden_dim)
+
+        # Semantic encoder layers
+        self.semantic_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                RMSNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(0.1),
+            ) for _ in range(num_layers)
+        ])
+
+        # Wave projectors
+        if shared_projector:
+            self.projector = nn.Linear(hidden_dim, num_harmonics * 3)
+        else:
+            self.freq_projector = nn.Linear(hidden_dim, num_harmonics)
+            self.amp_projector = nn.Linear(hidden_dim, num_harmonics)
+            self.phase_projector = nn.Linear(hidden_dim, num_harmonics)
+
+        self.shared_projector = shared_projector
+
+    def forward(self, token_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        x = self.embedding(token_ids)
+
+        # Attention
+        attn_out = self.self_attention(x, False, attention_mask)
+        x = x + attn_out
+
+        # Hidden expansion
+        x = self.input_projection(x)
+
+        # Semantic depth
+        for layer in self.semantic_layers:
+            x = x + layer(x)
+
+        # Generate harmonics
+        if self.shared_projector:
+            proj = self.projector(x)
+            f, a, p = proj.chunk(3, dim=-1)
+        else:
+            f = self.freq_projector(x)
+            a = self.amp_projector(x)
+            p = self.phase_projector(x)
+
+        frequencies = torch.sigmoid(f) * 20.0 + 0.1     # >0
+        amplitudes = F.softplus(a)                      # >0, unnormalized
+        phases = torch.tanh(p) * np.pi                  # [-π, π]
+
+        return Wave(frequencies, amplitudes, phases)

@@ -81,8 +81,8 @@ def main():
     args = TrainingArguments(
         output_dir=f"./wave_transformer_model_{timestamp}",  # <-- timestamped folder
         run_name=f"wave_transformer_dao_{timestamp}",  # also tag run name
-        per_device_train_batch_size=8,
-        gradient_accumulation_steps=2,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=1,
         learning_rate=3e-4,  # safer than 5e-4, less risk of NaNs
         weight_decay=0.05,  # lower, prevents over-regularizing
         adam_beta1=0.9,

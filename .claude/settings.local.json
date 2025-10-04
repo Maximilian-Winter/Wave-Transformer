@@ -3,7 +3,10 @@
     "allow": [
       "Bash(python -m pytest tests/core/test_transformer.py --collect-only)",
       "Bash(python:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(for:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

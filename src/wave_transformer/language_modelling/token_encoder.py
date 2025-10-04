@@ -9,7 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-from wave_transformer.core.transformer import Wave, ParallelBlock
+from wave_transformer.core.wave import Wave
+from wave_transformer.core.transformer import ParallelBlock
 from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
 
 class WaveEncoderBlock(nn.Module):
@@ -59,13 +60,13 @@ class TokenToWaveEncoder(nn.Module):
         x = self.embedding(token_ids)
         x = self.position_embedding(x)
 
-        f = self.freq_generator(self.pre_freq_norm(x), attention_mask)
-        a = self.amp_generator(self.pre_amp_norm(x), attention_mask)
-        p = self.phase_generator(self.pre_phase_norm(x), attention_mask)
+        f = self.freq_generator(x, attention_mask)
+        a = self.amp_generator(x, attention_mask)
+        p = self.phase_generator(x, attention_mask)
 
-        frequencies = torch.sigmoid(f) * 20.0 + 0.1
-        amplitudes = torch.sigmoid(a) * 2.0
-        phases = torch.tanh(p) * np.pi
+        frequencies = F.sigmoid(f) * 20.0 + 0.1
+        amplitudes = F.softplus(a)
+        phases = F.tanh(p) * np.pi
 
         return Wave(frequencies, amplitudes, phases)
 

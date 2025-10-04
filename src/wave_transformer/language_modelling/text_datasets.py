@@ -180,3 +180,49 @@ class TextDatasetPadded(Dataset):
             "attention_mask": self.examples[idx]["attention_mask"],
         }
 
+
+class TextDatasetPaddedSimple(Dataset):
+    """
+    Clean dataset for language modeling with line-aware packing.
+
+    - Packs each input text into one or more examples of length <= max_length.
+    - Prefer cutting at *line* boundaries. If a single line is too long, it packs by words for that line.
+    - `keep_remainder=True` => do NOT discard overflow; emit additional samples.
+      Set `keep_remainder=False` to mimic old behavior but cut at the last full line instead of mid-line.
+
+    Returns dict with:
+      - input_ids: LongTensor [max_length]
+      - attention_mask: BoolTensor [max_length] (True = valid token, False = padding)
+    """
+
+    def __init__(
+            self,
+            texts,
+            tokenizer: Tokenizer,
+            pad_token_id: int,
+            max_length: int = 512
+    ):
+        self.tokenizer = tokenizer
+        self.pad_id = pad_token_id
+        self.max_length = max_length
+
+        self.examples = []
+        texts = [t for t in texts if isinstance(t, str) and len(t.strip()) > 0]
+        encs = self.tokenizer.encode_batch(texts, add_special_tokens=False)
+        for enc in encs:
+            self.examples.append({
+                "input_ids": torch.tensor(enc.ids, dtype=torch.long),
+                "attention_mask": torch.tensor(enc.attention_mask, dtype=torch.bool),
+            })
+
+
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        return {
+            "input_ids": self.examples[idx]["input_ids"],
+            "attention_mask": self.examples[idx]["attention_mask"],
+        }
+

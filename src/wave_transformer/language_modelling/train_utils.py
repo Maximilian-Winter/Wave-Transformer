@@ -59,13 +59,14 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
     attn = torch.tensor(tokenized.attention_mask, dtype=torch.bool, device=device).unsqueeze(0)
 
     # ✅ Detect EOS token
-    eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+    eos_token_id = tokenizer.token_to_id("<|eos|>")
 
     for _ in range(max_tokens):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             logits = model({"token_ids": generated}, attention_mask=attn)
             logits = get_logits_tensor(logits)
             next_logits = logits[:, -1, :].squeeze(0)
+
 
         # ✅ Proper repetition penalty
         if repetition_penalty != 1.0 and generated.numel() > 0:
@@ -123,7 +124,7 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
         if generated.shape[1] + 1 >= max_seq_length:
             break
         generated = torch.cat([generated, torch.tensor([[next_token]], device=device, dtype=torch.long)], dim=1)
-        attn = torch.cat([attn, torch.tensor([[1]], device=device, dtype=torch.long)], dim=1)
+        attn = torch.cat([attn, torch.tensor([[1]], device=device, dtype=torch.bool)], dim=1)
 
     return tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
 

@@ -28,3 +28,5 @@ examples/language_modelling/epoch_0_batch_24999.zip
 examples/language_modelling/epoch_0_batch_29999.zip
 /examples/language_modelling/results_fineweb
 /examples/language_modelling/results_wikipedia
+/src/wave_transformer/core/sigmoid
+/src/wave_transformer/core/softplus

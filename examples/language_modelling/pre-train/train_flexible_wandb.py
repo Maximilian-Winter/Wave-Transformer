@@ -520,24 +520,24 @@ def train_language_model_distributed(rank, world_size):
         print("Dataloaders created...")
 
     # Create model components
-    wave_encoder = TokenToWaveEncoderSlim(
+    wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        num_layers=3,
+        num_layers=4,
         d_model=d_model,
-        num_heads=8,
-        num_heads_kv=8,
-        shared_projector=False
+        d_ff=int(d_model * 1.75),
+        dropout=0.1,
+        max_seq_len=seq_len
     )
 
     wave_decoder = WaveToTokenDecoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
         d_model=d_model,
-        hidden_mult=2.0,
+        hidden_mult=1.75,
         num_heads=8,
         num_heads_kv=8,
-        num_layers=3,
+        num_layers=4,
         low_rank_output=512
     )
 
@@ -552,7 +552,7 @@ def train_language_model_distributed(rank, world_size):
         transformer_num_heads=num_heads,
         transformer_heads_kv=num_heads,
         transformer_num_layers=num_layers,
-        transformer_d_ff_multi=4,
+        transformer_d_ff_multi=num_harmonics * 3 * 3,
         dropout=dropout
     ).to(device, dtype=dtype)
 

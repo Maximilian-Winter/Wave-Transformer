@@ -1,4 +1,5 @@
 import json
+import math
 import os.path
 from pathlib import Path
 from typing import Union
@@ -11,13 +12,15 @@ import torch.nn.functional as F
 
 from wave_transformer.core.wave import Wave
 from wave_transformer.core.transformer import ParallelBlock, MultiQueryFlashAttention, RMSNorm
-from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
+
+
 
 class WaveEncoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, num_heads_kv, d_ff, dropout, num_harmonics, num_layers: int = 2, use_flash=False):
         super().__init__()
-        self.layers = nn.ModuleList([ParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_flash)
+        self.layers = nn.ModuleList([ParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_yarn=True, use_flash=use_flash)
                                      for _ in range(num_layers)])
+        self.norm_f = nn.LayerNorm(d_model)
         self.proj = nn.Linear(d_model, num_harmonics)
 
     def forward(self, x, attention_mask=None):
@@ -25,7 +28,7 @@ class WaveEncoderBlock(nn.Module):
             x_out = layer(x, attention_mask=attention_mask)
             x = x + x_out
 
-        return self.proj(x)
+        return self.proj(self.norm_f(x))
 
 
 # --- TokenToWaveEncoder ---
@@ -42,9 +45,10 @@ class TokenToWaveEncoder(nn.Module):
         self.dropout = dropout
         self.max_seq_len = max_seq_len
         self.use_flash = use_flash
+        self.scale = math.sqrt(d_model)
 
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = RotaryPositionEmbedding(d_model, max_seq_len)
+
 
         self.freq_generator = WaveEncoderBlock(d_model, num_harmonics, num_harmonics, d_ff,
                                                dropout, num_harmonics, num_layers, use_flash)
@@ -54,8 +58,7 @@ class TokenToWaveEncoder(nn.Module):
                                                 dropout, num_harmonics, num_layers, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):
-        x = self.embedding(token_ids)
-        x = self.position_embedding(x)
+        x = self.token_embedding(token_ids) * self.scale
 
         f = self.freq_generator(x, attention_mask)
         a = self.amp_generator(x, attention_mask)

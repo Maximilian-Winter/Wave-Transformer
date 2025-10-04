@@ -383,14 +383,14 @@ def train_language_model_distributed(rank, world_size):
     # Model Parameters
     seq_len = 512
     d_model = 512
-    num_layers = 32
+    num_layers = 16
     num_heads = 8
     dropout = 0.1
     num_harmonics = 96
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 10
-    batch_size = 8 if torch.cuda.is_available() else 4
+    epochs = 20
+    batch_size = 16 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -461,7 +461,7 @@ def train_language_model_distributed(rank, world_size):
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts * 4
+        train_corpus = texts
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)

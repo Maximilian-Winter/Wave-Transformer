@@ -11,7 +11,7 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 
 # Load model
 model = WaveTransformer.load(
-    "./results_wikitext_v1_raw/epoch_0_batch_4999",
+    "./results_wikitext_v1_raw/epoch_0_batch_19999",
     encoder_cls=TokenToWaveEncoderSlim,
     decoder_cls=WaveToTokenDecoder,
     map_location=None
@@ -93,7 +93,7 @@ for prompt in prompts:
         top_k=0,
         top_p=0.9,
         min_p=0.025,              # typical sampling floor
-        repetition_penalty=1.12,
+        repetition_penalty=1.10,
         max_tokens=50,
         tokenizer=tokenizer,
         device="cuda",

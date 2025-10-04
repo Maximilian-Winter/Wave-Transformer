@@ -399,7 +399,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 2
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 32 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4

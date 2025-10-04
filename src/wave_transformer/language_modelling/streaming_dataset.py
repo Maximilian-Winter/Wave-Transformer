@@ -15,6 +15,9 @@ from torch.utils.data import IterableDataset
 from tokenizers import Tokenizer
 from datasets import load_dataset
 
+import json
+from pathlib import Path
+from typing import Union
 
 @dataclass
 class BoundedStreamingDataset:
@@ -381,7 +384,112 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 total += s.max_entries
         return total
 
+    def save_config(self, filepath: Union[str, Path]) -> None:
+        """Save dataset configuration to JSON."""
+        filepath = Path(filepath)
+        config = {
+            "dataset_specs": [
+                {
+                    "repo_id": spec.repo_id,
+                    "subset": spec.subset,
+                    "split": spec.split,
+                    "skip_first": spec.skip_first,
+                    "max_entries": spec.max_entries,
+                    "text_column": spec.text_column,
+                    "weight": spec.weight,
+                }
+                for spec in self.dataset_specs_template
+            ],
+            "pad_token_id": self.pad_token_id,
+            "sequence_length": self.sequence_length,
+            "batch_size": self.batch_size,
+            "prefetch_batches": self.prefetch_batches,
+            "prefetch_chunk_batches": self.prefetch_chunk_batches,
+            "tokenizer_batch_size": self.tokenizer_batch_size,
+            "weighted_sampling": self.weighted_sampling,
+            "global_max_entries": self.global_max_entries,
+            "seed": self.seed,
+            "move_to_device": self.move_to_device,
+            "device": str(self.device) if self.device else None,
+        }
+        with open(filepath, 'w') as f:
+            json.dump(config, f, indent=2)
 
+
+    @classmethod
+    def load_config(cls, filepath: Union[str, Path], tokenizer: Tokenizer, **overrides):
+        """Load dataset configuration from JSON and create instance."""
+        filepath = Path(filepath)
+        with open(filepath, 'r') as f:
+            config = json.load(f)
+
+        dataset_specs = [
+            BoundedStreamingDataset(**spec)
+            for spec in config["dataset_specs"]
+        ]
+
+        device_str = config.pop("device", None)
+        device = torch.device(device_str) if device_str else None
+
+        # Apply any runtime overrides
+        config.update(overrides)
+
+        return cls(
+            dataset_specs=dataset_specs,
+            tokenizer=tokenizer,
+            device=device,
+            **{k: v for k, v in config.items() if k != "dataset_specs"}
+        )
+
+
+    def save_data(self, filepath: Union[str, Path], max_samples: Optional[int] = None) -> int:
+        """Save dataset entries to JSON file. Returns number of samples saved."""
+        filepath = Path(filepath)
+        saved = 0
+
+        with open(filepath, 'w') as f:
+            f.write('[\n')
+            first = True
+
+            for sample in self:
+                if max_samples and saved >= max_samples:
+                    break
+
+                entry = {
+                    "input_ids": sample["input_ids"].cpu().tolist(),
+                    "attention_mask": sample["attention_mask"].cpu().tolist(),
+                }
+
+                if not first:
+                    f.write(',\n')
+                json.dump(entry, f)
+                first = False
+                saved += 1
+
+            f.write('\n]')
+
+        return saved
+
+
+    @staticmethod
+    def load_data(filepath: Union[str, Path], device: Optional[torch.device] = None) -> Iterator[Dict[str, torch.Tensor]]:
+        """Load saved dataset entries from JSON file."""
+        filepath = Path(filepath)
+
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+
+        for entry in data:
+            sample = {
+                "input_ids": torch.tensor(entry["input_ids"], dtype=torch.long),
+                "attention_mask": torch.tensor(entry["attention_mask"], dtype=torch.bool),
+            }
+
+            if device:
+                sample["input_ids"] = sample["input_ids"].to(device)
+                sample["attention_mask"] = sample["attention_mask"].to(device)
+
+            yield sample
 
 
 # Example usage

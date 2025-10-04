@@ -8,7 +8,7 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 
 # Load model
 model = WaveTransformer.load(
-    "./epoch_0_batch_14999",
+    "./epoch_0_batch_19999",
     encoder_cls=TokenToWaveEncoder,
     decoder_cls=WaveToTokenDecoder,
     map_location=None

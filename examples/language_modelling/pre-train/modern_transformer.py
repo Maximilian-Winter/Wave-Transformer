@@ -379,20 +379,20 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 2048
+    seq_len = 1024
     d_model = 512
     num_layers = 12
     num_heads = 8
-    dropout = 0.025
+    dropout = 0.1
     num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 1 if torch.cuda.is_available() else 4
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
-    accumulation_steps = 16
+    accumulation_steps = 2
     base_lr = 3e-4
-    final_lr = 5e-5
+    final_lr = 3e-5
     warmup_pct = 0.1
 
     # Initialize wandb (only on rank 0)
@@ -469,7 +469,7 @@ def train_language_model_distributed(rank, world_size):
     avg_train_length = 0
     max_train_length = -1
     min_train_length = 10000
-    entries_per_dataset = len(train_corpus)
+
     cleaned_corpus = []
     for train_text in train_corpus:
         train_length = len(tokenizer.encode(train_text).ids)
@@ -512,26 +512,6 @@ def train_language_model_distributed(rank, world_size):
     if rank == 0:
         print("Dataloaders created...")
 
-    # Create model components
-    wave_encoder = TokenToWaveEncoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        num_layers=3,
-        d_model=d_model,
-        dropout=dropout,
-        max_seq_len=seq_len
-    )
-
-    wave_decoder = WaveToTokenDecoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=2.0,
-        num_heads=8,
-        num_heads_kv=8,
-        num_layers=3,
-        low_rank_output=512
-    )
 
     if rank == 0:
         print("Creating model...")

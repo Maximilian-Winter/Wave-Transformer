@@ -63,7 +63,10 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
 
     for _ in range(max_tokens):
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": generated}, attention_mask=attn)
+            if not isinstance(model, WaveTransformer):
+                logits = model(generated, attention_mask=attn)
+            else:
+                logits = model({"token_ids": generated}, attention_mask=attn)
             logits = get_logits_tensor(logits)
             next_logits = logits[:, -1, :].squeeze(0)
 
@@ -207,7 +210,8 @@ def save_model_bundle(
         optimizer: Optional optimizer state to save
         scheduler: Optional scheduler state to save
     """
-
+    if not isinstance(model, WaveTransformer):
+        return None
     model.save(save_dir)
 
     if optimizer is not None or scheduler is not None:

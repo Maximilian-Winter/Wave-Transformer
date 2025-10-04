@@ -54,17 +54,16 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
                   temperature=0.75, top_k=0, top_p=0.9, min_p=0.0, repetition_penalty=1.2):
     model.eval()
 
-    tokens = tokenizer.encode(prompt).ids if isinstance(prompt, str) else prompt.ids
-    generated = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+    tokenized = tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
+    generated = torch.tensor(tokenized.ids, dtype=torch.long, device=device).unsqueeze(0)
+    attn = torch.tensor(tokenized.attention_mask, dtype=torch.bool, device=device).unsqueeze(0)
 
     # ✅ Detect EOS token
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    if eos_token_id is None:
-        eos_token_id = tokenizer.token_to_id("<|im_end|>") or tokenizer.token_to_id("</s>")
+    eos_token_id = tokenizer.token_to_id("<|endoftext|>")
 
     for _ in range(max_tokens):
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": generated})
+            logits = model({"token_ids": generated}, attention_mask=attn)
             logits = get_logits_tensor(logits)
             next_logits = logits[:, -1, :].squeeze(0)
 
@@ -123,6 +122,7 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
             break
 
         generated = torch.cat([generated, torch.tensor([[next_token]], device=device, dtype=torch.long)], dim=1)
+        attn = torch.cat([attn, torch.tensor([[1]], device=device, dtype=torch.long)], dim=1)
 
     return tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
 

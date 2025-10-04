@@ -451,7 +451,13 @@ def train_language_model_distributed(rank, world_size):
             subset="20231101.en",
             skip_first=0,
             max_entries=entries_per_dataset,
-            weight=1.0
+            weight=0.5
+        ),
+        BoundedStreamingDataset(
+            repo_id="HuggingFaceFW/fineweb",
+            skip_first=0,
+            max_entries=15000,
+            weight=0.5
         ),
     ]
 

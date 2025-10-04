@@ -8,7 +8,7 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 
 # Load model
 model = WaveTransformer.load(
-    "./epoch_0_batch_19999",
+    "./epoch_0_batch_24999",
     encoder_cls=TokenToWaveEncoder,
     decoder_cls=WaveToTokenDecoder,
     map_location=None
@@ -74,11 +74,11 @@ for prompt in prompts:
     gen = generate_text(
         model=model.to(device="cuda"),
         prompt=prompt,
-        temperature=0.62,
+        temperature=0.65,
         top_k=0,
-        top_p=0.85,
-        min_p=0.05,              # typical sampling floor
-        repetition_penalty=1.10,
+        top_p=0.9,
+        min_p=0.025,              # typical sampling floor
+        repetition_penalty=1.12,
         tokenizer=tokenizer,
         device="cuda",
         # optionally: max_new_tokens=120,

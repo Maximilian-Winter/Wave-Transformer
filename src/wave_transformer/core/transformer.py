@@ -23,7 +23,7 @@ class MultiQueryFlashAttention(nn.Module):
             n_heads_q: int,
             n_heads_kv: int,
             dropout_p: float = 0.0,
-            use_yarn=False,
+            use_yarn=True,
             max_seq_len: int = 512,
             use_flash: bool = True
     ):

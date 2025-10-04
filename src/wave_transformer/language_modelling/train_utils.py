@@ -51,7 +51,7 @@ def compute_distillation_loss(student_logits, teacher_logits, targets, pad_token
 
 @torch.no_grad()
 def generate_text(model, tokenizer, prompt, device, max_tokens=100,
-                  temperature=0.75, top_k=0, top_p=0.9, min_p=0.0, repetition_penalty=1.2):
+                  temperature=0.75, top_k=0, top_p=0.9, min_p=0.0, repetition_penalty=1.2, max_seq_length=128):
     model.eval()
 
     tokenized = tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
@@ -120,7 +120,8 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
         # ✅ Stop if EOS token generated
         if eos_token_id is not None and next_token == eos_token_id:
             break
-
+        if generated.shape[1] + 1 >= max_seq_length:
+            break
         generated = torch.cat([generated, torch.tensor([[next_token]], device=device, dtype=torch.long)], dim=1)
         attn = torch.cat([attn, torch.tensor([[1]], device=device, dtype=torch.long)], dim=1)
 

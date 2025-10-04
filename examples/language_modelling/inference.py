@@ -1,5 +1,6 @@
 import torch
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer, processors
+from tokenizers.processors import TemplateProcessing
 
 from wave_transformer.core.transformer import WaveTransformer
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
@@ -8,14 +9,30 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 
 # Load model
 model = WaveTransformer.load(
-    "./epoch_0_batch_24999",
+    "./epoch_0_batch_29999",
     encoder_cls=TokenToWaveEncoder,
     decoder_cls=WaveToTokenDecoder,
     map_location=None
 )
 tokenizer = Tokenizer.from_file("pre-train/SmolLM2-135M-Instruct-Tokenizer.json")
-pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
+tokenizer.add_special_tokens(["<|bos|>", "<|eos|>", "<|pad|>"])
 
+bos_token_id = tokenizer.token_to_id("<|bos|>")
+eos_token_id = tokenizer.token_to_id("<|eos|>")
+pad_token_id = tokenizer.token_to_id("<|pad|>")
+tokenizer.post_processor = processors.TemplateProcessing(
+        single="<|bos|> $A <|eos|>",
+        pair="<|bos|> $A <|eos|> <|bos|> $B <|eos|>",
+        special_tokens=[
+            ("<|bos|>", bos_token_id),
+            ("<|eos|>", eos_token_id),
+        ],
+    )
+
+print("Bos Token ID:", bos_token_id)
+print("Bos Token:", tokenizer.decode([bos_token_id], False))
+print("Eos Token ID:", eos_token_id)
+print("Eos Token:", tokenizer.decode([eos_token_id], False))
 print("Pad Token ID:", pad_token_id)
 print("Pad Token:", tokenizer.decode([pad_token_id], False))
 #test_generation(model=model.to(device="cuda"), tokenizer=tokenizer, device="cuda", repetition_penalty=1.2)

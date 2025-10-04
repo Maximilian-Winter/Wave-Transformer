@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import os
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from tokenizers import processors, Tokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
 import wandb
@@ -403,9 +405,7 @@ def train_language_model_distributed(rank, world_size):
     accumulation_steps = 1
     base_lr = 3e-4
     final_lr = 3e-5
-    warmup_pct = 0.05
-
-    model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
+    warmup_pct = 0.1
 
     # Initialize wandb (only on rank 0)
     use_wandb = False
@@ -432,17 +432,38 @@ def train_language_model_distributed(rank, world_size):
         )
 
     # Load tokenizer
-    from tokenizers import Tokenizer
-    tokenizer = Tokenizer.from_file(model_name)
-    pad_token_id = tokenizer.token_to_id("<|im_end|>") or 0
+    model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
+    train_tokenizer = Tokenizer.from_file(model_name)
+    seq_len = 128
+    train_tokenizer.add_special_tokens(["<|bos|>", "<|eos|>", "<|pad|>"])
 
-    if rank == 0:
-        print("Pad Token ID:", pad_token_id)
-        print("Pad Token:", tokenizer.decode([pad_token_id], False))
+    bos_token_id = train_tokenizer.token_to_id("<|bos|>")
+    eos_token_id = train_tokenizer.token_to_id("<|eos|>")
+    pad_token_id = train_tokenizer.token_to_id("<|pad|>")
 
-    vocab_size = tokenizer.get_vocab_size()
+    tokenizer = copy.deepcopy(train_tokenizer)
+    train_tokenizer.post_processor = processors.TemplateProcessing(
+        single="<|bos|> $A <|eos|>",
+        pair="<|bos|> $A <|eos|> <|bos|> $B <|eos|>",
+        special_tokens=[
+            ("<|bos|>", bos_token_id),
+            ("<|eos|>", eos_token_id),
+        ],
+    )
+    tokenizer.post_processor = processors.TemplateProcessing(
+        single="<|bos|> $A",
+        pair="<|bos|> $A <|bos|> $B",
+        special_tokens=[
+            ("<|bos|>", bos_token_id)
+        ],
+    )
+    train_tokenizer.enable_padding(pad_id=pad_token_id, pad_token="<|pad|>", length=seq_len)
+    train_tokenizer.enable_truncation(max_length=seq_len - 2)
 
-    entries_per_dataset = 2_000_000
+
+    vocab_size = train_tokenizer.get_vocab_size()
+
+    entries_per_dataset = 250_000
 
     # Fix dataset creation - use same dataset for all ranks
     dataset_specs = [
@@ -450,20 +471,21 @@ def train_language_model_distributed(rank, world_size):
             repo_id="wikimedia/wikipedia",
             subset="20231101.en",
             skip_first=0,
-            max_entries=entries_per_dataset,
+            max_entries=500_000,
             weight=0.5
         ),
         BoundedStreamingDataset(
             repo_id="HuggingFaceFW/fineweb",
+            subset="sample-10BT",
             skip_first=0,
-            max_entries=15000,
+            max_entries=500_000,
             weight=0.5
         ),
     ]
 
     train_dataset = MultiBoundedStreamingDataset(
         dataset_specs=dataset_specs,
-        tokenizer=tokenizer,
+        tokenizer=train_tokenizer,
         pad_token_id=pad_token_id,
         sequence_length=seq_len,
         batch_size=batch_size,
@@ -654,7 +676,7 @@ def train_language_model_distributed(rank, world_size):
         if rank == 0:
             model_for_gen = wave_transformer_model.module if use_ddp else wave_transformer_model
             generations = test_generation(
-                model_for_gen, tokenizer, 100,
+                model_for_gen, tokenizer, 50,
                 device,
                 prompts=[
                     "The tao that can be told",

@@ -17,7 +17,7 @@ def create_chatml_tokenizer(vocab_size=32000):
     """
     # Initialize a BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
-    tokenizer.from_file()
+    #tokenizer.from_file()
     
     # Set up pre-tokenizer (splits on whitespace and punctuation)
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
@@ -111,19 +111,19 @@ if __name__ == "__main__":
     # tokenizer = train_tokenizer(tokenizer, trainer, ["your_corpus.txt"])
     
     # For demo purposes, let's create a small example corpus
-    with open("/home/claude/example_corpus.txt", "w") as f:
+    with open("example_corpus.txt", "w") as f:
         f.write("Hello world! This is a test corpus.\n")
         f.write("The quick brown fox jumps over the lazy dog.\n")
         f.write("Machine learning is fascinating.\n")
     
     print("Training tokenizer on example corpus...")
-    tokenizer = train_tokenizer(tokenizer, trainer, ["/home/claude/example_corpus.txt"])
+    tokenizer = train_tokenizer(tokenizer, trainer, ["example_corpus.txt"])
     
     # Set up post-processor
     setup_post_processor(tokenizer, special_tokens)
     
     # Save the tokenizer
-    tokenizer.save("/home/claude/chatml_tokenizer.json")
+    tokenizer.save("chatml_tokenizer.json")
     print("Tokenizer saved to chatml_tokenizer.json")
     
     # Example: Format and tokenize a conversation

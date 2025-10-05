@@ -18,7 +18,7 @@ References:
 """
 
 import math
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -241,7 +241,7 @@ class PhaseCoherentAttention(nn.Module):
 
         # YaRN rotary embeddings
         if use_yarn:
-            from wave_transformer.language_modelling.yarn import YaRNRotaryEmbedding
+            from wave_transformer.core.yarn import YaRNRotaryEmbedding
             self.yarn_rope = YaRNRotaryEmbedding(
                 d_model=self.d_head,
                 max_len=max_seq_len,

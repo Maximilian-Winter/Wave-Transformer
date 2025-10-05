@@ -12,14 +12,14 @@ import torch.nn.functional as F
 
 
 from wave_transformer.core.wave import Wave
-from wave_transformer.core.transformer import ParallelBlock, MultiQueryFlashAttention, RMSNorm
+from wave_transformer.core.transformer import TransformerParallelBlock, MultiQueryFlashAttention, RMSNorm
 
 
 
 class WaveEncoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, num_heads_kv, d_ff, dropout, num_harmonics, num_layers: int = 2, max_seq_len=256, use_flash=False):
         super().__init__()
-        self.layers = nn.ModuleList([ParallelBlock(d_model=d_model, n_heads=num_heads, n_heads_kv=num_heads_kv, d_ff=d_ff, max_seq_len=max_seq_len,dropout=dropout, use_yarn=True, use_flash=use_flash)
+        self.layers = nn.ModuleList([TransformerParallelBlock(d_model=d_model, n_heads=num_heads, n_heads_kv=num_heads_kv, d_ff=d_ff, max_seq_len=max_seq_len,dropout=dropout, use_yarn=True, use_flash=use_flash)
                                      for _ in range(num_layers)])
         self.norm_input = nn.LayerNorm(d_model)
         self.norm_f = nn.LayerNorm(d_model)
@@ -33,10 +33,6 @@ class WaveEncoderBlock(nn.Module):
 
         return self.proj(self.norm_f(x))
 
-@dataclasses.dataclass
-class SignalNormalization:
-    multiplicator: float = 1.0
-    offset: float = 0.0
 
 # --- TokenToWaveEncoder ---
 class TokenToWaveEncoder(nn.Module):

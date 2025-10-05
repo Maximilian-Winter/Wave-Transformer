@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import os
@@ -5,15 +6,42 @@ from pathlib import Path
 
 from typing import Any, Union
 
-import torch.nn as nn
-import torch.nn.functional as F
-from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
-
 import torch
 
 from typing import Optional
+import torch.nn as nn
+import torch.nn.functional as F
 
-from wave_transformer.language_modelling.yarn import YaRNRotaryEmbedding
+from .embeddings import RotaryPositionEmbedding
+from .yarn import YaRNRotaryEmbedding
+
+
+class LearnableActivation(nn.Module):
+    """
+    Learnable activation function that maps scalars through a small MLP.
+    Each input value gets its own learned transformation.
+    """
+
+    def __init__(self, hidden_dim: int = 8):
+        super().__init__()
+        self.fc1 = nn.Linear(1, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
+
+        # Initialize to approximate identity function
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x_flat = x.reshape(-1, 1)
+
+        hidden = torch.tanh(self.fc1(x_flat))
+        out = self.fc2(hidden)
+
+        # Add residual connection to maintain gradient flow
+        out = out + x_flat
+
+        return out.reshape(shape)
 
 
 class MultiQueryFlashAttention(nn.Module):
@@ -45,8 +73,6 @@ class MultiQueryFlashAttention(nn.Module):
             self.flash_attn_varlen_func = flash_attn_varlen_func
 
         if use_yarn:
-            print("d_head:", self.d_head)
-            print("max_seq_len:", max_seq_len)
             # ✅ Use d_head, not d_model
             self.yarn_rope = YaRNRotaryEmbedding(
                 d_model=self.d_head,  # Changed!
@@ -179,16 +205,33 @@ class RMSNorm(nn.Module):
         return self.weight * x / norm
 
 
-class ParallelBlock(nn.Module):
+@dataclasses.dataclass
+class TransformerParallelBlockConfig:
+    d_model: int = 256
+    num_heads_q: int = 8
+    num_heads_kv: int = 8
+    d_ff: int = 1024
+    max_seq_len: int = 256
+    use_yarn: bool = True
+    use_flash: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TransformerParallelBlockConfig":
+        return cls(**data)
+
+class TransformerParallelBlock(nn.Module):
     """
     Parallel attention and FFN from GPT-J/PaLM
     Reduces latency by computing attention and FFN in parallel
     """
-    def __init__(self, d_model, n_heads, n_heads_kv, d_ff, max_seq_len=256, dropout=0.0, use_yarn=True, use_flash=True):
+    def __init__(self, d_model, num_heads_q, num_heads_kv, d_ff, max_seq_len=256, dropout=0.0, use_yarn=True, use_flash=True):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=n_heads, n_heads_kv=n_heads_kv, dropout_p=dropout, max_seq_len=max_seq_len, use_yarn=use_yarn, use_flash=use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=num_heads_q, n_heads_kv=num_heads_kv, dropout_p=dropout, max_seq_len=max_seq_len, use_yarn=use_yarn, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -209,7 +252,7 @@ class ModernTransformer(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.positional_encoding = RotaryPositionEmbedding(d_model, max_seq_len)
         self.layers = nn.ModuleList([
-            ParallelBlock(d_model=d_model, n_heads=n_heads_q,
+            TransformerParallelBlock(d_model=d_model, n_heads=n_heads_q,
                           n_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
@@ -229,106 +272,3 @@ class ModernTransformer(nn.Module):
 
         x = self.out_proj(x)
         return x
-
-class WaveTransformer(nn.Module):
-    def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6,
-                 transformer_num_heads=8, transformer_heads_kv=4, transformer_d_ff_multi=4, max_seq_len=512,
-                 dropout=0.1, use_flash=True):
-        super().__init__()
-        self.num_harmonics = num_harmonics
-        self.input_dim = num_harmonics * 3
-        self.transformer_num_layers = transformer_num_layers
-        self.transformer_num_heads = transformer_num_heads
-        self.transformer_heads_kv = transformer_heads_kv
-        self.transformer_d_ff_multi = transformer_d_ff_multi
-        self.dropout_p = dropout
-        self.use_flash = use_flash
-        self.wave_encoder = wave_encoder
-
-        self.layers = nn.ModuleList([
-            ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
-                          n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi, max_seq_len=max_seq_len,
-                          dropout=dropout, use_yarn=True,use_flash=use_flash)
-            for _ in range(transformer_num_layers)
-        ])
-        self.norm_f = RMSNorm(self.input_dim)
-
-        self.wave_decoder = wave_decoder
-
-    def forward(self, encoder_input: dict[str, Any], causal=True, return_encoder_outputs=False,
-                attention_mask=None):
-        wave = self.wave_encoder(attention_mask=attention_mask, **encoder_input)
-        x = wave.to_representation()
-
-
-        for i, block in enumerate(self.layers):
-            x = block(x, causal=causal, attention_mask=attention_mask)
-
-        x = self.norm_f(x)
-        output = self.wave_decoder(x, attention_mask=attention_mask)
-
-        if return_encoder_outputs:
-            return output, wave
-        return output
-
-    def save(self, model_dir: Union[str, Path]):
-        """Save model state and configuration, including encoder and decoder."""
-        path = Path(model_dir)
-        path.mkdir(parents=True, exist_ok=True)
-
-        config_path = path / 'transformer_config.json'
-        checkpoint_path = path / 'transformer_state_dict.pt'
-
-        config = {
-            'num_harmonics': self.num_harmonics,
-            'transformer_num_layers': self.transformer_num_layers,
-            'transformer_num_heads': self.transformer_num_heads,
-            'transformer_heads_kv': self.transformer_heads_kv,
-            'transformer_d_ff_multi': self.transformer_d_ff_multi,
-            'dropout': self.dropout_p,
-            'use_flash': self.use_flash,
-        }
-
-        checkpoint = {
-            'transformer_state_dict': self.state_dict(),
-        }
-
-        with open(config_path, 'w', encoding="utf-8") as f:
-            json.dump(config, f, indent=4)
-        torch.save(checkpoint, checkpoint_path)
-
-        # Save encoder and decoder
-        self.wave_encoder.save(model_dir)
-        self.wave_decoder.save(model_dir)
-
-    @classmethod
-    def load(cls, model_dir: Union[str, Path], encoder_cls, decoder_cls, map_location=None):
-        """Load model from directory, including encoder and decoder."""
-        if os.path.exists(model_dir) and os.path.isdir(model_dir):
-            path = Path(model_dir)
-
-            config_path = path / 'transformer_config.json'
-            checkpoint_path = path / 'transformer_state_dict.pt'
-
-            # Load encoder and decoder
-            wave_encoder = encoder_cls.load(path, map_location=map_location)
-            wave_decoder = decoder_cls.load(path, map_location=map_location)
-
-            # Load transformer config and create model
-            with open(config_path, 'r', encoding="utf-8") as f:
-                config = json.load(f)
-
-            model = cls(
-                wave_encoder=wave_encoder,
-                wave_decoder=wave_decoder,
-                **config
-            )
-
-            # Load transformer state dict
-            checkpoint = torch.load(checkpoint_path, map_location=map_location)
-            model.load_state_dict(checkpoint['transformer_state_dict'])
-
-            return model
-        else:
-            raise FileNotFoundError
-

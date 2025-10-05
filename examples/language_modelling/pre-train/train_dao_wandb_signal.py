@@ -13,6 +13,9 @@ import torch.multiprocessing as mp
 from tokenizers import processors, Tokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
+
+from wave_transformer.core.normalization import linear_norm, expression_norm
+from wave_transformer.core.transformer import TransformerParallelBlockConfig
 from wave_transformer.language_modelling.text_datasets import TextDatasetPaddedSimple
 
 import wandb
@@ -22,7 +25,8 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.signal_core import SignalConfig, MultiSignal, NormalizationSpec
+from wave_transformer.core.signal_processor import SignalTransformer
 from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
@@ -146,7 +150,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": inputs}, attention_mask=input_mask)
+            logits = model(inputs, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
            
         if not torch.isfinite(loss):
@@ -374,23 +378,23 @@ def train_language_model_distributed(rank, world_size):
         device = torch.device('cpu')
         print(f"WARNING: CUDA not available, using CPU")
 
-    result_dir = "./results"
+    result_dir = "./results_signal"
     if rank == 0:
         os.makedirs(result_dir, exist_ok=True)
         print(f"Result directory: {result_dir}")
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 256
-    d_model = 512
+    seq_len = 512
+    d_model = 768
     num_layers = 16
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 32
+    num_dimensions = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 8 if torch.cuda.is_available() else 4
+    batch_size = 16 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -399,7 +403,7 @@ def train_language_model_distributed(rank, world_size):
 
 
     # Initialize wandb (only on rank 0)
-    use_wandb = True
+    use_wandb = False
     if rank == 0 and use_wandb:
         wandb.init(
             project="wave-transformer-training",
@@ -410,7 +414,7 @@ def train_language_model_distributed(rank, world_size):
                 "num_layers": num_layers,
                 "num_heads": num_heads,
                 "dropout": dropout,
-                "num_harmonics": num_harmonics,
+                "num_dimensions": num_dimensions,
                 "epochs": epochs,
                 "batch_size": batch_size * world_size,
                 "batch_size_per_gpu": batch_size,
@@ -453,15 +457,15 @@ def train_language_model_distributed(rank, world_size):
 
 
     vocab_size = train_tokenizer.get_vocab_size()
-
+ #
     def load_dao_teachings():
-        with open("corpus.json", "r", encoding="utf-8") as file:
+        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts
+        train_corpus = texts * 50
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -474,16 +478,16 @@ def train_language_model_distributed(rank, world_size):
     max_train_length = -1
     min_train_length = 10000
     entries_per_dataset = len(train_corpus)
-    cleaned_corpus = []
-    for train_text in train_corpus:
-        train_length = len(tokenizer.encode(train_text).ids)
-        if train_length >= 6:
-            cleaned_corpus.append(train_text)
-            avg_train_length += train_length
-            max_train_length = max(max_train_length, train_length)
-            min_train_length = min(min_train_length, train_length)
-    entries_per_dataset = len(cleaned_corpus)
-    avg_train_length = avg_train_length / len(train_corpus)
+    #cleaned_corpus = []
+    #for train_text in train_corpus:
+    #    train_length = len(tokenizer.encode(train_text).ids)
+    #    if train_length >= 6:
+    #        cleaned_corpus.append(train_text)
+    #        avg_train_length += train_length
+    #        max_train_length = max(max_train_length, train_length)
+    #        min_train_length = min(min_train_length, train_length)
+    #entries_per_dataset = len(cleaned_corpus)
+    #avg_train_length = avg_train_length / len(train_corpus)
     print(
         f"Dataset Entries: {entries_per_dataset}, Average length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
     train_dataset = TextDatasetPaddedSimple(train_corpus, train_tokenizer, pad_token_id, seq_len)
@@ -516,60 +520,54 @@ def train_language_model_distributed(rank, world_size):
     if rank == 0:
         print("Dataloaders created...")
 
-    # Create model components
-    # Create model components
-    wave_encoder = TokenToWaveEncoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        num_layers=3,
-        d_model=d_model,
-        d_ff=int(d_model * 1.75),
-        dropout=0.1,
-        max_seq_len=seq_len
-    )
-
-    wave_decoder = WaveToTokenDecoder(
-        vocab_size=vocab_size,
-        num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=1.75,
-        num_heads=8,
-        num_heads_kv=8,
-        num_layers=3,
-        low_rank_output=512,
-        max_seq_len=seq_len
-    )
-
     if rank == 0:
         print("Creating model...")
-    dtype = torch.float32
-
-    wave_transformer_model = WaveTransformer(
-        wave_encoder=wave_encoder,
-        wave_decoder=wave_decoder,
-        num_harmonics=num_harmonics,
-        transformer_num_layers=32,
-        transformer_num_heads=8,
-        transformer_heads_kv=4,
-        transformer_d_ff_multi=4,
+    dtype = torch.bfloat16
+    signal_configs = [
+        SignalConfig(
+            signal_name="frequency",
+            torch_activation_function=torch.sigmoid,
+            normalization=linear_norm(scale=20.0, offset=0.1),
+            num_dimensions=64
+        ),
+        SignalConfig(
+            signal_name="amplitude",
+            torch_activation_function=torch.nn.functional.softplus,
+            normalization=linear_norm(scale=1.0, offset=0.0),
+            num_dimensions=64
+        ),
+        SignalConfig(
+            signal_name="phase",
+            torch_activation_function=torch.tanh,
+            normalization=linear_norm(scale=np.pi, offset=0.0),
+            num_dimensions=64
+        ),
+    ]
+    input_dim = sum([signal.num_dimensions for signal in signal_configs])
+    signal_transformer_model = SignalTransformer(
+        vocab_size=tokenizer.get_vocab_size(),
+        signals=signal_configs,
+        encoder_d_model=d_model,
+        decoder_d_model=d_model,
+        transformer_num_layers=num_layers,
+        transformer_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads, max_seq_len=seq_len, d_ff=input_dim * 4), # 3 Signals with each 32 dimensions
+        encoder_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads, max_seq_len=seq_len),
         max_seq_len=seq_len,
-
-        dropout=dropout
-    ).to(device, dtype=dtype)
+    ).to(device)
 
     # Wrap model with DDP if using multiple GPUs
     if use_ddp:
-        wave_transformer_model = DDP(
-            wave_transformer_model,
+        signal_transformer_model = DDP(
+            signal_transformer_model,
             device_ids=[rank] if torch.cuda.is_available() else None,
             output_device=rank if torch.cuda.is_available() else None,
             find_unused_parameters=False
         )
 
     if rank == 0:
-        model_to_print = wave_transformer_model.module if use_ddp else wave_transformer_model
+        model_to_print = signal_transformer_model.module if use_ddp else signal_transformer_model
         print("Model:\n", model_to_print)
-        total_params = sum(p.numel() for p in wave_transformer_model.parameters())
+        total_params = sum(p.numel() for p in signal_transformer_model.parameters())
         print(f"Model parameters: {total_params:,}")
 
         # Log model info to wandb
@@ -578,7 +576,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Create optimizer
     optimizer = optim.AdamW(
-        wave_transformer_model.parameters(),
+        signal_transformer_model.parameters(),
         lr=base_lr,
         betas=(0.9, 0.95),
         eps=1e-8,
@@ -614,7 +612,7 @@ def train_language_model_distributed(rank, world_size):
     # Create chronicle (only on main process)
     if rank == 0:
         timestamp = datetime.now().isoformat()
-        model_to_save = wave_transformer_model.module if use_ddp else wave_transformer_model
+        model_to_save = signal_transformer_model.module if use_ddp else signal_transformer_model
         chronicle = {
             'experiment_name': f"{camel_to_snake(model_to_save.__class__.__name__)}_experiment",
             'timestamp': timestamp,
@@ -652,7 +650,7 @@ def train_language_model_distributed(rank, world_size):
     for epoch in range(epochs):
         # Train
         train_loss = train_epoch(
-            result_dir, epoch, wave_transformer_model, train_loader,
+            result_dir, epoch, signal_transformer_model, train_loader,
             optimizer, scheduler, pad_token_id, rank, device, accumulation_steps,
             use_ddp, global_step, use_wandb
         )
@@ -669,7 +667,7 @@ def train_language_model_distributed(rank, world_size):
 
         # Generation and reporting (only on main process)
         if rank == 0:
-            model_for_gen = wave_transformer_model.module if use_ddp else wave_transformer_model
+            model_for_gen = signal_transformer_model.module if use_ddp else signal_transformer_model
             generations = test_generation(
                 model_for_gen, tokenizer, 50,
                 device,
@@ -749,7 +747,7 @@ def train_language_model_distributed(rank, world_size):
     if use_ddp:
         cleanup()
 
-    return wave_transformer_model, chronicle if rank == 0 else (wave_transformer_model, None)
+    return signal_transformer_model, chronicle if rank == 0 else (signal_transformer_model, None)
 
 
 def main():

@@ -228,3 +228,5 @@ class MultiSignal:
             f"num_dimensions={self.num_dimensions}, "
             f"shape={shape_str})"
         )
+
+

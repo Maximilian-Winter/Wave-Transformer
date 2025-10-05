@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import os
@@ -13,7 +14,35 @@ import torch
 
 from typing import Optional
 
-from wave_transformer.language_modelling.yarn import YaRNRotaryEmbedding
+from wave_transformer.core.yarn import YaRNRotaryEmbedding
+
+
+class LearnableActivation(nn.Module):
+    """
+    Learnable activation function that maps scalars through a small MLP.
+    Each input value gets its own learned transformation.
+    """
+
+    def __init__(self, hidden_dim: int = 8):
+        super().__init__()
+        self.fc1 = nn.Linear(1, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
+
+        # Initialize to approximate identity function
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x_flat = x.reshape(-1, 1)
+
+        hidden = torch.tanh(self.fc1(x_flat))
+        out = self.fc2(hidden)
+
+        # Add residual connection to maintain gradient flow
+        out = out + x_flat
+
+        return out.reshape(shape)
 
 
 class MultiQueryFlashAttention(nn.Module):
@@ -45,8 +74,6 @@ class MultiQueryFlashAttention(nn.Module):
             self.flash_attn_varlen_func = flash_attn_varlen_func
 
         if use_yarn:
-            print("d_head:", self.d_head)
-            print("max_seq_len:", max_seq_len)
             # ✅ Use d_head, not d_model
             self.yarn_rope = YaRNRotaryEmbedding(
                 d_model=self.d_head,  # Changed!
@@ -179,7 +206,24 @@ class RMSNorm(nn.Module):
         return self.weight * x / norm
 
 
-class ParallelBlock(nn.Module):
+@dataclasses.dataclass
+class TransformerParallelBlockConfig:
+    d_model: int = 256
+    num_heads_q: int = 8
+    num_heads_kv: int = 8
+    d_ff: int = 1024
+    max_seq_len: int = 256
+    use_yarn: bool = True
+    use_flash: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TransformerParallelBlockConfig":
+        return cls(**data)
+
+class TransformerParallelBlock(nn.Module):
     """
     Parallel attention and FFN from GPT-J/PaLM
     Reduces latency by computing attention and FFN in parallel
@@ -209,7 +253,7 @@ class ModernTransformer(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.positional_encoding = RotaryPositionEmbedding(d_model, max_seq_len)
         self.layers = nn.ModuleList([
-            ParallelBlock(d_model=d_model, n_heads=n_heads_q,
+            TransformerParallelBlock(d_model=d_model, n_heads=n_heads_q,
                           n_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
@@ -246,7 +290,7 @@ class WaveTransformer(nn.Module):
         self.wave_encoder = wave_encoder
 
         self.layers = nn.ModuleList([
-            ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
+            TransformerParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
                           n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True,use_flash=use_flash)
             for _ in range(transformer_num_layers)

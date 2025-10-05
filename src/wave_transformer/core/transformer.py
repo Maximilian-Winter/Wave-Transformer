@@ -23,6 +23,8 @@ class MultiQueryFlashAttention(nn.Module):
             n_heads_q: int,
             n_heads_kv: int,
             dropout_p: float = 0.0,
+            use_yarn=True,
+            max_seq_len: int = 256,
             use_flash: bool = True
     ):
         super().__init__()
@@ -35,13 +37,22 @@ class MultiQueryFlashAttention(nn.Module):
         self.scale = 1.0 / math.sqrt(self.d_head)
         self.dropout_p = dropout_p
         self.use_flash = use_flash
-
+        self.use_yarn = use_yarn
 
         if self.use_flash:
             from flash_attn import flash_attn_func, flash_attn_varlen_func
             self.flash_attn_func = flash_attn_func
             self.flash_attn_varlen_func = flash_attn_varlen_func
 
+        if use_yarn:
+            print("d_head:", self.d_head)
+            print("max_seq_len:", max_seq_len)
+            # ✅ Use d_head, not d_model
+            self.yarn_rope = YaRNRotaryEmbedding(
+                d_model=self.d_head,  # Changed!
+                max_len=max_seq_len,
+                original_max_len=max_seq_len
+            )
 
         self.q_proj = nn.Linear(d_model, n_heads_q * self.d_head, bias=False)
         self.kv_proj = nn.Linear(d_model, 2 * n_heads_kv * self.d_head, bias=False)
@@ -57,6 +68,9 @@ class MultiQueryFlashAttention(nn.Module):
         q = self.q_proj(x).reshape(B, N, self.n_heads_q, self.d_head)
         kv = self.kv_proj(x).reshape(B, N, 2, self.n_heads_kv, self.d_head)
         k, v = kv.unbind(2)
+
+        if self.use_yarn:
+            q, k = self.yarn_rope(q, k)
 
         if self.use_flash and attention_mask is None:
             q, k, v = q.half(), k.half(), v.half()
@@ -170,11 +184,11 @@ class ParallelBlock(nn.Module):
     Parallel attention and FFN from GPT-J/PaLM
     Reduces latency by computing attention and FFN in parallel
     """
-    def __init__(self, d_model, n_heads, n_heads_kv, d_ff, dropout=0.0, use_flash=True):
+    def __init__(self, d_model, n_heads, n_heads_kv, d_ff, dropout=0.0, use_yarn=True, use_flash=True):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=n_heads, n_heads_kv=n_heads_kv, dropout_p=dropout, use_flash=use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=n_heads, n_heads_kv=n_heads_kv, dropout_p=dropout,  use_yarn=use_yarn, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -197,7 +211,7 @@ class ModernTransformer(nn.Module):
         self.layers = nn.ModuleList([
             ParallelBlock(d_model=d_model, n_heads=n_heads_q,
                           n_heads_kv=n_heads_k, d_ff=d_ff,
-                          dropout=dropout, use_flash=use_flash)
+                          dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
         ])
         self.out_proj = nn.Linear(d_model, vocab_size)
@@ -234,7 +248,7 @@ class WaveTransformer(nn.Module):
         self.layers = nn.ModuleList([
             ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
                           n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi,
-                          dropout=dropout, use_flash=use_flash)
+                          dropout=dropout, use_yarn=True,use_flash=use_flash)
             for _ in range(transformer_num_layers)
         ])
         self.norm_f = RMSNorm(self.input_dim)

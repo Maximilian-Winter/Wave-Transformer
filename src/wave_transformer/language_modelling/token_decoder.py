@@ -63,7 +63,7 @@ class WaveToTokenDecoder(nn.Module):
 
     def forward(self, representation: torch.Tensor, attention_mask=None) -> torch.Tensor:
         x = self.input_projection(representation)
-        attn_out = self.self_attention(x, True)
+        attn_out = self.self_attention(x, True, attention_mask)
         x = x + attn_out
         x = self.hidden_projection(x)
 

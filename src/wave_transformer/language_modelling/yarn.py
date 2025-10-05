@@ -17,37 +17,20 @@ class YaRNRotaryEmbedding(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        self.max_len = max_len
-        self.base = base
-        self.scale = scale
-        self.original_max_len = original_max_len
-
-        # Calculate dimensions for different scaling regions
-        dim = d_model // 2
 
         # Compute inverse frequencies
         inv_freq = 1.0 / (base ** (torch.arange(0, d_model, 2).float() / d_model))
 
-        # YaRN: Apply NTK-aware interpolation with wavelength-dependent scaling
+        # YaRN scaling
         if scale > 1.0:
-            # Calculate the scaling factors for each dimension
-            low_freq_factor = original_max_len / max_len
-            high_freq_factor = 1.0
-
-            # Wavelength for each frequency
             wavelengths = 2 * math.pi / inv_freq
-
-            # Smooth interpolation between low and high frequency factors
             smooth_factor = (wavelengths - beta_fast) / (beta_slow - beta_fast)
             smooth_factor = torch.clamp(smooth_factor, 0.0, 1.0)
 
-            # Interpolate scaling factors
-            scale_factors = (1 - smooth_factor) * high_freq_factor + smooth_factor * low_freq_factor
-
-            # Apply NTK-aware scaling
+            low_freq_factor = original_max_len / max_len
+            scale_factors = (1 - smooth_factor) * 1.0 + smooth_factor * low_freq_factor
             inv_freq = inv_freq / scale_factors
 
-            # Compute mscale for attention entropy preservation
             if mscale != 1.0:
                 self.mscale = mscale * math.sqrt(1 + math.log(scale) / math.log(original_max_len))
             else:
@@ -57,53 +40,44 @@ class YaRNRotaryEmbedding(nn.Module):
 
         self.register_buffer('inv_freq', inv_freq)
 
-        # Precompute embeddings
+        # Precompute for max length
         t = torch.arange(max_len).float()
         freqs = torch.outer(t, inv_freq)
 
         self.register_buffer('cos', freqs.cos())
         self.register_buffer('sin', freqs.sin())
 
-    def forward(self, x):
-        seq_len = x.shape[1]
+    def forward(self, q, k):
+        """
+        Apply RoPE to Q and K tensors.
+        Expected shape: (B, N, n_heads, d_head)
+        """
+        seq_len = q.shape[1]
 
-        cos = self.cos[:seq_len, :].unsqueeze(0)
-        sin = self.sin[:seq_len, :].unsqueeze(0)
+        cos = self.cos[:seq_len]  # (seq_len, d_head//2)
+        sin = self.sin[:seq_len]  # (seq_len, d_head//2)
 
-        # Interleave even and odd dimensions
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
+        q_rot = self._apply_rotary(q, cos, sin)
+        k_rot = self._apply_rotary(k, cos, sin)
+
+        return q_rot, k_rot
+
+    def _apply_rotary(self, x, cos, sin):
+        """
+        x: (B, seq_len, n_heads, d_head)
+        cos, sin: (seq_len, d_head//2)
+        """
+        # Split into even and odd features
+        x_even = x[..., 0::2]  # (B, seq_len, n_heads, d_head//2)
+        x_odd = x[..., 1::2]  # (B, seq_len, n_heads, d_head//2)
+
+        # Reshape cos/sin for broadcasting: (1, seq_len, 1, d_head//2)
+        cos = cos.unsqueeze(0).unsqueeze(2)
+        sin = sin.unsqueeze(0).unsqueeze(2)
 
         # Apply rotation
-        rotated = torch.stack([
-            x1 * cos - x2 * sin,
-            x1 * sin + x2 * cos
-        ], dim=-1).flatten(-2)
+        out = torch.empty_like(x)
+        out[..., 0::2] = x_even * cos - x_odd * sin
+        out[..., 1::2] = x_even * sin + x_odd * cos
 
-        # Apply mscale
-        return rotated * self.mscale
-
-
-# Example usage
-if __name__ == "__main__":
-    # Standard configuration (no extension)
-    rope_standard = YaRNRotaryEmbedding(
-        d_model=128,
-        max_len=2048,
-        original_max_len=2048
-    )
-
-    # Extended context with YaRN (4x extension)
-    rope_yarn = YaRNRotaryEmbedding(
-        d_model=128,
-        max_len=8192,
-        original_max_len=2048,
-        scale=4.0,
-        beta_fast=32,
-        beta_slow=1,
-        mscale=1.0  # Set to sqrt(scale) for attention preservation
-    )
-
-    x = torch.randn(2, 4096, 128)
-    output = rope_yarn(x)
-    print(f"Output shape: {output.shape}")
+        return out * self.mscale

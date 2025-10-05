@@ -378,7 +378,7 @@ def train_language_model_distributed(rank, world_size):
         device = torch.device('cpu')
         print(f"WARNING: CUDA not available, using CPU")
 
-    result_dir = "./results"
+    result_dir = "./results_signal"
     if rank == 0:
         os.makedirs(result_dir, exist_ok=True)
         print(f"Result directory: {result_dir}")
@@ -386,11 +386,11 @@ def train_language_model_distributed(rank, world_size):
 
     # Model Parameters
     seq_len = 512
-    d_model = 512
+    d_model = 768
     num_layers = 16
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 32
+    num_dimensions = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
@@ -414,7 +414,7 @@ def train_language_model_distributed(rank, world_size):
                 "num_layers": num_layers,
                 "num_heads": num_heads,
                 "dropout": dropout,
-                "num_harmonics": num_harmonics,
+                "num_dimensions": num_dimensions,
                 "epochs": epochs,
                 "batch_size": batch_size * world_size,
                 "batch_size_per_gpu": batch_size,
@@ -459,13 +459,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
  #
     def load_dao_teachings():
-        with open("corpus.json", "r", encoding="utf-8") as file:
+        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts * 3
+        train_corpus = texts * 50
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -528,28 +528,30 @@ def train_language_model_distributed(rank, world_size):
             signal_name="frequency",
             torch_activation_function=torch.sigmoid,
             normalization=linear_norm(scale=20.0, offset=0.1),
-            num_dimensions=32
+            num_dimensions=64
         ),
         SignalConfig(
             signal_name="amplitude",
             torch_activation_function=torch.nn.functional.softplus,
             normalization=linear_norm(scale=1.0, offset=0.0),
-            num_dimensions=32
+            num_dimensions=64
         ),
         SignalConfig(
             signal_name="phase",
             torch_activation_function=torch.tanh,
             normalization=linear_norm(scale=np.pi, offset=0.0),
-            num_dimensions=32
+            num_dimensions=64
         ),
     ]
+    input_dim = sum([signal.num_dimensions for signal in signal_configs])
     signal_transformer_model = SignalTransformer(
         vocab_size=tokenizer.get_vocab_size(),
         signals=signal_configs,
         encoder_d_model=d_model,
         decoder_d_model=d_model,
-        transformer_layer_config=TransformerParallelBlockConfig(d_model=32 * 3, max_seq_len=seq_len), # 3 Signals with each 32 dimensions
-        encoder_layer_config=TransformerParallelBlockConfig(d_model=d_model, max_seq_len=seq_len),
+        transformer_num_layers=num_layers,
+        transformer_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads, max_seq_len=seq_len, d_ff=input_dim * 4), # 3 Signals with each 32 dimensions
+        encoder_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads, max_seq_len=seq_len),
         max_seq_len=seq_len,
     ).to(device)
 

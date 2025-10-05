@@ -385,7 +385,7 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 256
+    seq_len = 512
     d_model = 512
     num_layers = 16
     num_heads = 8
@@ -394,7 +394,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 8 if torch.cuda.is_available() else 4
+    batch_size = 16 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -457,7 +457,7 @@ def train_language_model_distributed(rank, world_size):
 
 
     vocab_size = train_tokenizer.get_vocab_size()
-
+ #
     def load_dao_teachings():
         with open("corpus.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
@@ -478,16 +478,16 @@ def train_language_model_distributed(rank, world_size):
     max_train_length = -1
     min_train_length = 10000
     entries_per_dataset = len(train_corpus)
-    cleaned_corpus = []
-    for train_text in train_corpus:
-        train_length = len(tokenizer.encode(train_text).ids)
-        if train_length >= 6:
-            cleaned_corpus.append(train_text)
-            avg_train_length += train_length
-            max_train_length = max(max_train_length, train_length)
-            min_train_length = min(min_train_length, train_length)
-    entries_per_dataset = len(cleaned_corpus)
-    avg_train_length = avg_train_length / len(train_corpus)
+    #cleaned_corpus = []
+    #for train_text in train_corpus:
+    #    train_length = len(tokenizer.encode(train_text).ids)
+    #    if train_length >= 6:
+    #        cleaned_corpus.append(train_text)
+    #        avg_train_length += train_length
+    #        max_train_length = max(max_train_length, train_length)
+    #        min_train_length = min(min_train_length, train_length)
+    #entries_per_dataset = len(cleaned_corpus)
+    #avg_train_length = avg_train_length / len(train_corpus)
     print(
         f"Dataset Entries: {entries_per_dataset}, Average length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
     train_dataset = TextDatasetPaddedSimple(train_corpus, train_tokenizer, pad_token_id, seq_len)

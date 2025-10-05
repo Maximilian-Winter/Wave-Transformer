@@ -210,8 +210,7 @@ def save_model_bundle(
         optimizer: Optional optimizer state to save
         scheduler: Optional scheduler state to save
     """
-    if not isinstance(model, WaveTransformer):
-        return None
+
     model.save(save_dir)
 
     if optimizer is not None or scheduler is not None:

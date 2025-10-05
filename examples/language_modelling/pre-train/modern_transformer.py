@@ -34,8 +34,7 @@ from wave_transformer.language_modelling.train_utils import (
     extract_architecture_details,
     test_generation,
     diversity_report,
-    save_training_chronicle,
-    save_model_bundle, lm_total_loss
+    save_training_chronicle
 )
 
 
@@ -198,18 +197,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
             }, step=global_step[0])
 
-        # Save checkpoint
-        if rank == 0 and ((batch_idx + 1) % 5000) == 0:
-            print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Saving checkpoint at step {global_step[0]}")
-            model_to_save = model.module if use_ddp else model
-            save_model_bundle(
-                model_to_save,
-                f"{result_dir}/epoch_{epoch}_batch_{batch_idx}",
-                epoch,
-                global_step=global_step[0]
-            )
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Checkpoint saved")
+
 
         # Update progress bar with current learning rate
         if rank == 0:
@@ -396,7 +384,7 @@ def train_language_model_distributed(rank, world_size):
     warmup_pct = 0.1
 
     # Initialize wandb (only on rank 0)
-    use_wandb = True
+    use_wandb = False
     if rank == 0 and use_wandb:
         wandb.init(
             project="wave-transformer-training",
@@ -674,13 +662,6 @@ def train_language_model_distributed(rank, world_size):
                 'diversity': diversity,
             })
 
-            save_model_bundle(
-                model_for_gen,
-                f"{result_dir}/epoch_{epoch}_final",
-                (entries_per_dataset // batch_size * (epoch + 1)),
-                optimizer=optimizer,
-                scheduler=scheduler
-            )
 
             # Record epoch
             epoch_data = {

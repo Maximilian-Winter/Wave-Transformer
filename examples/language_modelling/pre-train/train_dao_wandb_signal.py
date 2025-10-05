@@ -414,7 +414,6 @@ def train_language_model_distributed(rank, world_size):
                 "num_layers": num_layers,
                 "num_heads": num_heads,
                 "dropout": dropout,
-                "num_dimensions": num_dimensions,
                 "epochs": epochs,
                 "batch_size": batch_size * world_size,
                 "batch_size_per_gpu": batch_size,
@@ -528,19 +527,19 @@ def train_language_model_distributed(rank, world_size):
             signal_name="frequency",
             torch_activation_function=torch.sigmoid,
             normalization=linear_norm(scale=20.0, offset=0.1),
-            num_dimensions=64
+            num_dimensions=32
         ),
         SignalConfig(
             signal_name="amplitude",
             torch_activation_function=torch.nn.functional.softplus,
             normalization=linear_norm(scale=1.0, offset=0.0),
-            num_dimensions=64
+            num_dimensions=32
         ),
         SignalConfig(
             signal_name="phase",
             torch_activation_function=torch.tanh,
             normalization=linear_norm(scale=np.pi, offset=0.0),
-            num_dimensions=64
+            num_dimensions=32
         ),
     ]
     input_dim = sum([signal.num_dimensions for signal in signal_configs])

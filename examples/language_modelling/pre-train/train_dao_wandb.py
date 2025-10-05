@@ -536,7 +536,6 @@ def train_language_model_distributed(rank, world_size):
         num_heads=8,
         num_heads_kv=8,
         num_layers=3,
-        max_seq_len=seq_len,
         low_rank_output=512
     )
 

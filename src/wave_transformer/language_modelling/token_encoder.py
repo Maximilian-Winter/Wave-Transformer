@@ -18,7 +18,7 @@ from wave_transformer.language_modelling.embeddings import SinusoidalPositionEmb
 class WaveEncoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, num_heads_kv, d_ff, dropout, num_harmonics, num_layers: int = 2, use_flash=False):
         super().__init__()
-        self.layers = nn.ModuleList([ParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_yarn=True, use_flash=use_flash)
+        self.layers = nn.ModuleList([ParallelBlock(d_model, num_heads, num_heads_kv, d_ff, dropout, use_flash=use_flash)
                                      for _ in range(num_layers)])
         self.norm_f = nn.LayerNorm(d_model)
         self.proj = nn.Linear(d_model, num_harmonics)

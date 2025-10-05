@@ -403,7 +403,7 @@ def train_language_model_distributed(rank, world_size):
 
 
     # Initialize wandb (only on rank 0)
-    use_wandb = True
+    use_wandb = False
     if rank == 0 and use_wandb:
         wandb.init(
             project="wave-transformer-training",

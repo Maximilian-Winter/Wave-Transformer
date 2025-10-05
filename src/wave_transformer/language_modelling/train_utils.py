@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.wave_transformer import WaveTransformer
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 

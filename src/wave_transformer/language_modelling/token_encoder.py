@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 from wave_transformer.core.wave import Wave
 from wave_transformer.core.transformer import ParallelBlock, MultiQueryFlashAttention, RMSNorm
-
+from wave_transformer.language_modelling.embeddings import SinusoidalPositionEmbedding, RotaryPositionEmbedding
 
 
 class WaveEncoderBlock(nn.Module):
@@ -48,17 +48,18 @@ class TokenToWaveEncoder(nn.Module):
         self.scale = math.sqrt(d_model)
 
         self.embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = RotaryPositionEmbedding(d_model, max_seq_len)
 
-
-        self.freq_generator = WaveEncoderBlock(d_model, num_harmonics, num_harmonics, d_ff,
+        self.freq_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                                dropout, num_harmonics, num_layers, use_flash)
-        self.amp_generator = WaveEncoderBlock(d_model, num_harmonics, num_harmonics, d_ff,
+        self.amp_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                               dropout, num_harmonics, num_layers, use_flash)
-        self.phase_generator = WaveEncoderBlock(d_model, num_harmonics, num_harmonics, d_ff,
+        self.phase_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
                                                 dropout, num_harmonics, num_layers, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):
-        x = self.embedding(token_ids) * self.scale
+        x = self.embedding(token_ids)
+        x = self.position_embedding(x)
 
         f = self.freq_generator(x, attention_mask)
         a = self.amp_generator(x, attention_mask)

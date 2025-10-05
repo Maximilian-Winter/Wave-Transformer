@@ -37,14 +37,14 @@ class MultiQueryFlashAttention(nn.Module):
         self.scale = 1.0 / math.sqrt(self.d_head)
         self.dropout_p = dropout_p
         self.use_flash = use_flash
-        self.use_yarn = use_yarn
+        self.use_yarn = False
 
         if self.use_flash:
             from flash_attn import flash_attn_func, flash_attn_varlen_func
             self.flash_attn_func = flash_attn_func
             self.flash_attn_varlen_func = flash_attn_varlen_func
 
-        if use_yarn:
+        if self.use_yarn:
             # ✅ Use d_head, not d_model
             self.yarn_rope = YaRNRotaryEmbedding(
                 d_model=self.d_head,  # Changed!

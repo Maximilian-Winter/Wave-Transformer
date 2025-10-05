@@ -12,7 +12,7 @@ from wave_transformer.language_modelling.train_utils import generate_text, load_
 # Load model
 model = WaveTransformer.load(
     "./results_wikitext_v1_raw/epoch_0_batch_19999",
-    encoder_cls=TokenToWaveEncoderSlim,
+    encoder_cls=TokenToWaveEncoder,
     decoder_cls=WaveToTokenDecoder,
     map_location=None
 )

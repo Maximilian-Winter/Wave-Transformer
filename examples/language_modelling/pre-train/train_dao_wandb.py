@@ -381,16 +381,16 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
+    seq_len = 256
     d_model = 512
     num_layers = 16
     num_heads = 8
     dropout = 0.1
-    num_harmonics = 96
+    num_harmonics = 32
 
     # Hyperparameters - adjust batch size per GPU
-    epochs = 20
-    batch_size = 16 if torch.cuda.is_available() else 4
+    epochs = 5
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -455,13 +455,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
-        with open("corpus.json", "r", encoding="utf-8") as file:
+        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts
+        train_corpus = texts * 50
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -517,15 +517,15 @@ def train_language_model_distributed(rank, world_size):
         print("Dataloaders created...")
 
     # Create model components
-    wave_encoder = TokenToWaveEncoderSlim(
+    # Create model components
+    wave_encoder = TokenToWaveEncoder(
         vocab_size=vocab_size,
         num_harmonics=num_harmonics,
-        d_model=d_model,
-        hidden_mult=2,
-        num_heads=num_heads,
-        num_heads_kv=num_heads,
         num_layers=3,
-        shared_projector=False
+        d_model=d_model,
+        d_ff=int(d_model * 1.75),
+        dropout=0.1,
+        max_seq_len=seq_len
     )
 
     wave_decoder = WaveToTokenDecoder(
@@ -536,6 +536,7 @@ def train_language_model_distributed(rank, world_size):
         num_heads=8,
         num_heads_kv=8,
         num_layers=3,
+        max_seq_len=seq_len,
         low_rank_output=512
     )
 
@@ -547,10 +548,11 @@ def train_language_model_distributed(rank, world_size):
         wave_encoder=wave_encoder,
         wave_decoder=wave_decoder,
         num_harmonics=num_harmonics,
-        transformer_num_heads=num_heads,
-        transformer_heads_kv=num_heads,
-        transformer_num_layers=num_layers,
+        transformer_num_layers=32,
+        transformer_num_heads=8,
+        transformer_heads_kv=8,
         transformer_d_ff_multi=4,
+
         dropout=dropout
     ).to(device, dtype=dtype)
 

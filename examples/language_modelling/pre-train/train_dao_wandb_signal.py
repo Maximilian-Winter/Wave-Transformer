@@ -385,18 +385,18 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 512
-    d_model = 768
-    num_layers = 16
+    seq_len = 1024
+    d_model = 512
+    num_layers = 12
     num_heads = 8
     dropout = 0.1
-    num_dimensions = 64
+    num_harmonics = 64
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 8 if torch.cuda.is_available() else 4
     eval_batch_size = 1
-    accumulation_steps = 1
+    accumulation_steps = 2
     base_lr = 3e-4
     final_lr = 3e-5
     warmup_pct = 0.1

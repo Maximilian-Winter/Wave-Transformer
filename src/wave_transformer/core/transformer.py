@@ -250,10 +250,10 @@ class ModernTransformer(nn.Module):
                  use_flash=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.positional_encoding = RotaryPositionEmbedding(d_model, max_seq_len)
+        self.scale = math.sqrt(d_model)
         self.layers = nn.ModuleList([
-            TransformerParallelBlock(d_model=d_model, n_heads=n_heads_q,
-                          n_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
+            TransformerParallelBlock(d_model=d_model, num_heads_q=n_heads_q,
+                          num_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
         ])
@@ -262,8 +262,8 @@ class ModernTransformer(nn.Module):
         self.layer_norms = nn.ModuleList([nn.LayerNorm(d_model)for _ in range(num_layers)])
 
     def forward(self, x, causal=True, attention_mask=None):
-        x = self.embedding(x)
-        x = self.positional_encoding(x)
+        x = self.embedding(x) * self.scale
+
 
         for layer, norm in zip(self.layers, self.layer_norms):
             x_out = layer(x, causal=causal, attention_mask=attention_mask)

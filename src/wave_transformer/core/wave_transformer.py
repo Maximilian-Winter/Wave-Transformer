@@ -33,8 +33,8 @@ class WaveTransformer(nn.Module):
         self.wave_encoder = wave_encoder
 
         self.layers = nn.ModuleList([
-            TransformerParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
-                          n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi, max_seq_len=max_seq_len,
+            TransformerParallelBlock(d_model=self.input_dim, num_heads_q=transformer_num_heads,
+                          num_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True,use_flash=use_flash)
             for _ in range(transformer_num_layers)
         ])

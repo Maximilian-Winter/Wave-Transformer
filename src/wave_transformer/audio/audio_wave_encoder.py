@@ -10,7 +10,8 @@ import torchaudio
 import math
 from typing import Tuple
 
-from wave_transformer.core.transformer import Wave, RMSNorm, FlashAttention
+from wave_transformer.core.wave import Wave
+from wave_transformer.core.transformer import RMSNorm, MultiQueryFlashAttention
 
 
 class AudioToWave(nn.Module):
@@ -110,9 +111,11 @@ class AudioToWave(nn.Module):
         )
 
         # Temporal modeling - audio has strong temporal dependencies!
-        self.temporal_attention = FlashAttention(
+        self.temporal_attention = MultiQueryFlashAttention(
             d_model=num_harmonics * 3,
-            n_heads=num_heads
+            n_heads_q=num_heads,
+            n_heads_kv=num_heads,
+            use_yarn=False
         )
 
         self.norm = RMSNorm(num_harmonics * 3)
@@ -120,7 +123,8 @@ class AudioToWave(nn.Module):
     def forward(
             self,
             audio: torch.Tensor,
-            return_raw_spectrum: bool = False
+            return_raw_spectrum: bool = False,
+            attention_mask=None
     ) -> Wave:
         """
         Transform audio to Wave
@@ -128,7 +132,7 @@ class AudioToWave(nn.Module):
         Args:
             audio: Raw waveform (batch, samples) or (batch, channels, samples)
             return_raw_spectrum: Also return the intermediate spectrum
-
+            attention_mask: Not needed, confirm to API.
         Returns:
             Wave with learned semantic harmonics
         """
@@ -387,9 +391,11 @@ class SemanticTransformBlock(nn.Module):
         self.norm2 = RMSNorm(d_model)
 
         # Self-attention for finding patterns
-        self.attention = FlashAttention(
+        self.attention = MultiQueryFlashAttention(
             d_model=d_model,
-            n_heads=num_heads
+            n_heads_q=num_heads,
+            n_heads_kv=num_heads,
+            use_yarn=False,
         )
 
         # FFN for semantic transformation

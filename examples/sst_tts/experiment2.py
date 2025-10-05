@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, get_scheduler
 from wave_transformer.audio.audio_dataset import VCTKDataset, VCTKCollator
 from wave_transformer.audio.audio_wave_decoder import WaveToAudio
 from wave_transformer.audio.audio_wave_encoder import AudioToWave
-from wave_transformer.core.transformer import WaveTransformer
+from wave_transformer.core.wave_transformer import WaveTransformer
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
 

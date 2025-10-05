@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, get_worker_info, IterableDataset
 
 from tqdm import tqdm
 
-from wave_transformer.core.transformer import WaveTransformer, ModernTransformer
+from wave_transformer.core.transformer import ModernTransformer
 from wave_transformer.language_modelling.streaming_dataset import MultiBoundedStreamingDataset, BoundedStreamingDataset
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder
@@ -451,13 +451,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
-        with open("corpus.json", "r", encoding="utf-8") as file:
+        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts
+        train_corpus = texts * 50
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)

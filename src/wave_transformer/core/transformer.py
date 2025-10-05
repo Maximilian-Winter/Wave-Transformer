@@ -227,11 +227,11 @@ class TransformerParallelBlock(nn.Module):
     Parallel attention and FFN from GPT-J/PaLM
     Reduces latency by computing attention and FFN in parallel
     """
-    def __init__(self, d_model, n_heads, n_heads_kv, d_ff, max_seq_len=256, dropout=0.0, use_yarn=True, use_flash=True):
+    def __init__(self, d_model, num_heads_q, num_heads_kv, d_ff, max_seq_len=256, dropout=0.0, use_yarn=True, use_flash=True):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=n_heads, n_heads_kv=n_heads_kv, dropout_p=dropout, max_seq_len=max_seq_len, use_yarn=use_yarn, use_flash=use_flash)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=num_heads_q, n_heads_kv=num_heads_kv, dropout_p=dropout, max_seq_len=max_seq_len, use_yarn=use_yarn, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 

@@ -15,6 +15,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
 
 from wave_transformer.core.normalization import linear_norm, expression_norm
+from wave_transformer.core.transformer import TransformerParallelBlockConfig
 from wave_transformer.language_modelling.text_datasets import TextDatasetPaddedSimple
 
 import wandb
@@ -149,7 +150,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
 
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model({"token_ids": inputs}, attention_mask=input_mask)
+            logits = model(inputs, attention_mask=input_mask)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
            
         if not torch.isfinite(loss):
@@ -464,7 +465,7 @@ def train_language_model_distributed(rank, world_size):
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts
+        train_corpus = texts * 3
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -547,7 +548,9 @@ def train_language_model_distributed(rank, world_size):
         signals=signal_configs,
         encoder_d_model=d_model,
         decoder_d_model=d_model,
-        
+        transformer_layer_config=TransformerParallelBlockConfig(d_model=32 * 3, max_seq_len=seq_len), # 3 Signals with each 32 dimensions
+        encoder_layer_config=TransformerParallelBlockConfig(d_model=d_model, max_seq_len=seq_len),
+        max_seq_len=seq_len,
     ).to(device)
 
     # Wrap model with DDP if using multiple GPUs

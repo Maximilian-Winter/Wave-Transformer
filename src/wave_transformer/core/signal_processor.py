@@ -70,12 +70,12 @@ class SignalEncoder(nn.Module):
 
         for output_signal in self.output_signals:
             if self.share_encoder_layers:
-                x = self.signal_output_encoders[output_signal.signal_name](x)
+                x_out = self.signal_output_encoders[output_signal.signal_name](x)
             else:
-                x = self.signal_output_encoders[output_signal.signal_name](x, causal=causal,
+                x_out = self.signal_output_encoders[output_signal.signal_name](x, causal=causal,
                                                                            attention_mask=attention_mask)
-            x = output_signal.normalization.apply(x)
-            signal_list.append(x)
+            x_out = output_signal.normalization.apply(x_out)
+            signal_list.append(x_out)
 
         return MultiSignal.from_signals(signal_list)
 
@@ -142,7 +142,9 @@ class SignalDecoder(nn.Module):
         self.use_flash = use_flash
         self.low_rank_output = low_rank_output
 
-        self.input_projection = nn.Linear(self.d_model, d_model)
+        input_dim = sum([signal.num_dimensions for signal in output_signals])
+
+        self.input_projection = nn.Linear(input_dim, d_model)
         self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv, 0.1, max_seq_len=max_seq_len,
                                                        use_flash=use_flash)
         self.hidden_projection = nn.Linear(d_model, self.d_model)

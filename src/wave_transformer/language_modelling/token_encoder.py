@@ -33,10 +33,33 @@ class WaveEncoderBlock(nn.Module):
 
         return self.proj(self.norm_f(x))
 
-@dataclasses.dataclass
-class SignalNormalization:
-    multiplicator: float = 1.0
-    offset: float = 0.0
+class LearnableActivation(nn.Module):
+    """
+    Learnable activation function that maps scalars through a small MLP.
+    Each input value gets its own learned transformation.
+    """
+
+    def __init__(self, hidden_dim: int = 8):
+        super().__init__()
+        self.fc1 = nn.Linear(1, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
+
+        # Initialize to approximate identity function
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x_flat = x.reshape(-1, 1)
+
+        hidden = torch.tanh(self.fc1(x_flat))
+        out = self.fc2(hidden)
+
+        # Add residual connection to maintain gradient flow
+        out = out + x_flat
+
+        return out.reshape(shape)
+
 
 # --- TokenToWaveEncoder ---
 class TokenToWaveEncoder(nn.Module):

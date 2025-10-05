@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import os.path
@@ -32,10 +33,14 @@ class WaveEncoderBlock(nn.Module):
 
         return self.proj(self.norm_f(x))
 
+@dataclasses.dataclass
+class SignalNormalization:
+    multiplicator: float = 1.0
+    offset: float = 0.0
 
 # --- TokenToWaveEncoder ---
 class TokenToWaveEncoder(nn.Module):
-    def __init__(self, vocab_size: int, d_model: int = 256, num_layers: int = 4,
+    def __init__(self, vocab_size: int, d_model: int = 256, num_layers: int = 4, num_heads: int = 8, num_heads_kv: int = 8,
                  d_ff: int = 1024, num_harmonics: int = 64, dropout: float = 0.1,
                  max_seq_len=4096, use_flash=True):
         super().__init__()
@@ -52,11 +57,11 @@ class TokenToWaveEncoder(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
 
 
-        self.freq_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
+        self.freq_generator = WaveEncoderBlock(d_model, num_heads, num_heads_kv, d_ff,
                                                dropout, num_harmonics, num_layers, max_seq_len, use_flash)
-        self.amp_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
+        self.amp_generator = WaveEncoderBlock(d_model, num_heads, num_heads_kv, d_ff,
                                               dropout, num_harmonics, num_layers, max_seq_len, use_flash)
-        self.phase_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
+        self.phase_generator = WaveEncoderBlock(d_model, num_heads, num_heads_kv, d_ff,
                                                 dropout, num_harmonics, num_layers, max_seq_len, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):

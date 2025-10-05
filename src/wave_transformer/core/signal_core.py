@@ -98,6 +98,7 @@ class SignalConfig:
             'relu': torch.relu,
             'gelu': nn.functional.gelu,
             'silu': nn.functional.silu,
+            'softplus': nn.functional.softplus,
             'identity': lambda x: x,
         }
 

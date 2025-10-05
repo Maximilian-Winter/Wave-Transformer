@@ -11,7 +11,7 @@ from wave_transformer.analysis.generation import (
 from wave_transformer.core.signal_processor import SignalTransformer
 
 seq_len = 512
-model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
+model_name = "./pre-train/SmolLM2-135M-Instruct-Tokenizer.json"
 train_tokenizer = Tokenizer.from_file(model_name)
 
 train_tokenizer.add_special_tokens(["<|bos|>", "<|eos|>", "<|pad|>"])
@@ -21,14 +21,7 @@ eos_token_id = train_tokenizer.token_to_id("<|eos|>")
 pad_token_id = train_tokenizer.token_to_id("<|pad|>")
 
 tokenizer = copy.deepcopy(train_tokenizer)
-train_tokenizer.post_processor = processors.TemplateProcessing(
-    single="<|bos|> $A <|eos|>",
-    pair="<|bos|> $A <|eos|> <|bos|> $B <|eos|>",
-    special_tokens=[
-        ("<|bos|>", bos_token_id),
-        ("<|eos|>", eos_token_id),
-    ],
-)
+
 tokenizer.post_processor = processors.TemplateProcessing(
     single="<|bos|> $A",
     pair="<|bos|> $A <|bos|> $B",
@@ -36,19 +29,21 @@ tokenizer.post_processor = processors.TemplateProcessing(
         ("<|bos|>", bos_token_id)
     ],
 )
-train_tokenizer.enable_padding(pad_id=pad_token_id, pad_token="<|pad|>", length=seq_len)
-train_tokenizer.enable_truncation(max_length=seq_len - 2)
 
-model = SignalTransformer.load("./pre-train/results_signal/epoch_4_final")
+prompts = [
+    "The tao that can be told",
+    "Success is as dangerous as failure."
+]
+model = SignalTransformer.load("./pre-train/results_signal/epoch_4_final").to(device="cuda")
 # Initialize all analyzers
-visualizer = LiveGenerationVisualizer(model, tokenizer)
+visualizer = LiveGenerationVisualizer(model, tokenizer, device="cuda")
 trajectory_tracker = WaveTrajectoryTracker()
 confidence_tracker = GenerationConfidenceTracker(k=10)
 roundtrip_analyzer = RoundTripAnalyzer(model)
 
 # Generate with live visualization
 output_ids, waves = visualizer.generate_with_visualization(
-    prompt="The future of AI is",
+    prompt="The tao that can be told",
     max_length=50,
     temperature=0.8,
     interactive=False  # Set to True for real-time display

@@ -291,7 +291,8 @@ class LiveGenerationVisualizer:
         if prompt_ids is not None:
             current_ids = prompt_ids.to(self.device)
         elif prompt is not None and self.tokenizer is not None:
-            current_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
+            tokenized =  self.tokenizer.encode(prompt)
+            current_ids = torch.tensor(tokenized.ids, dtype=torch.long, device=self.device).unsqueeze(0)
         else:
             raise ValueError("Either prompt or prompt_ids must be provided")
 
@@ -302,7 +303,7 @@ class LiveGenerationVisualizer:
         for step in range(max_length):
             # Forward pass with encoder wave return
             logits, encoder_wave = self.model(
-                encoder_input={'token_ids': current_ids},
+                current_ids,
                 return_encoder_outputs=True
             )
 

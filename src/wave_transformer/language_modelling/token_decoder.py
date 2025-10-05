@@ -22,6 +22,7 @@ class WaveToTokenDecoder(nn.Module):
             num_layers: int = 2,
             dropout: float = 0.1,
             low_rank_output: int = None,
+            max_seq_len: int = 512,
             use_flash=False,
     ):
         super().__init__()
@@ -40,7 +41,7 @@ class WaveToTokenDecoder(nn.Module):
         hidden_dim = int(d_model * hidden_mult)
 
         self.input_projection = nn.Linear(input_dim, d_model)
-        self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv, self.dropout, use_flash=use_flash)
+        self.self_attention = MultiQueryFlashAttention(d_model, num_heads, num_heads_kv, self.dropout, max_seq_len=max_seq_len, use_flash=use_flash)
         self.hidden_projection = nn.Linear(d_model, hidden_dim)
 
         self.decoder_layers = nn.ModuleList([

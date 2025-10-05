@@ -210,7 +210,7 @@ class ModernTransformer(nn.Module):
         self.positional_encoding = RotaryPositionEmbedding(d_model, max_seq_len)
         self.layers = nn.ModuleList([
             ParallelBlock(d_model=d_model, n_heads=n_heads_q,
-                          n_heads_kv=n_heads_k, d_ff=d_ff,
+                          n_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
         ])
@@ -232,7 +232,7 @@ class ModernTransformer(nn.Module):
 
 class WaveTransformer(nn.Module):
     def __init__(self, wave_encoder, wave_decoder, num_harmonics=64, transformer_num_layers=6,
-                 transformer_num_heads=8, transformer_heads_kv=4, transformer_d_ff_multi=4,
+                 transformer_num_heads=8, transformer_heads_kv=4, transformer_d_ff_multi=4, max_seq_len=512,
                  dropout=0.1, use_flash=True):
         super().__init__()
         self.num_harmonics = num_harmonics
@@ -247,7 +247,7 @@ class WaveTransformer(nn.Module):
 
         self.layers = nn.ModuleList([
             ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
-                          n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi,
+                          n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi, max_seq_len=max_seq_len,
                           dropout=dropout, use_yarn=True,use_flash=use_flash)
             for _ in range(transformer_num_layers)
         ])

@@ -37,3 +37,4 @@ examples/language_modelling/epoch_0_batch_29999.zip
 /examples/language_modelling/results_wikitext_v1_raw
 Wave-Transformer.zip
 /examples/language_modelling/pre-train/results_signal
+/examples/language_modelling/signal/results_signal

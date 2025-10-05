@@ -4,20 +4,18 @@ import torch
 from tokenizers import Tokenizer, processors
 from tokenizers.processors import TemplateProcessing
 
-from wave_transformer.core.wave_transformer import WaveTransformer
+from wave_transformer.core.signal_processor import SignalTransformer
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoder, TokenToWaveEncoderSlim
 from wave_transformer.language_modelling.train_utils import generate_text, load_model_bundle, test_generation
 
 # Load model
-model = WaveTransformer.load(
-    "./results_wikitext_v1_raw/epoch_0_batch_19999",
-    encoder_cls=TokenToWaveEncoder,
-    decoder_cls=WaveToTokenDecoder,
+model = SignalTransformer.load(
+    "./results_signal/epoch_4_final",
     map_location=None
 )
 from tokenizers import Tokenizer
-model_name = "./pre-train/SmolLM2-135M-Instruct-Tokenizer.json"
+model_name = "SmolLM2-135M-Instruct-Tokenizer.json"
 tokenizer = Tokenizer.from_file(model_name)
 seq_len = 128
 tokenizer.add_special_tokens(["<|bos|>", "<|eos|>", "<|pad|>"])

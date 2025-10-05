@@ -240,6 +240,12 @@ class SignalTransformer(nn.Module):
                  transformer_layer_config: TransformerParallelBlockConfig = TransformerParallelBlockConfig(),
                  max_seq_len: int = 256, use_flash: bool = False, ):
         super().__init__()
+
+        # Make sure dimensions are correct.
+        input_dim = sum([signal.num_dimensions for signal in signals])
+        encoder_layer_config.d_model = encoder_d_model
+        transformer_layer_config.d_model = input_dim
+
         self.vocab_size = vocab_size
         self.signals = signals
         self.encoder_d_model = encoder_d_model

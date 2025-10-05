@@ -53,13 +53,14 @@ PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
 ```
 
 **Usage Example:**
+
 ```python
 import torch
-from wave_transformer.language_modelling.embeddings import SinusoidalPositionEmbedding
+from wave_transformer.core.embeddings import SinusoidalPositionEmbedding
 
 pos_embed = SinusoidalPositionEmbedding(d_model=256, max_len=512)
 x = torch.randn(32, 128, 256)  # (batch, seq_len, d_model)
-x_with_pos = pos_embed(x)      # (32, 128, 256)
+x_with_pos = pos_embed(x)  # (32, 128, 256)
 ```
 
 **Implementation Notes:**
@@ -98,8 +99,9 @@ x_rotated = [x1*cos - x2*sin, x1*sin + x2*cos]
 ```
 
 **Usage Example:**
+
 ```python
-from wave_transformer.language_modelling.embeddings import RotaryPositionEmbedding
+from wave_transformer.core.embeddings import RotaryPositionEmbedding
 
 rope = RotaryPositionEmbedding(d_model=256, max_len=512)
 x = torch.randn(32, 128, 256)
@@ -139,8 +141,9 @@ x_rotated = rope(x)  # (32, 128, 256)
 - Hash embedding: `(num_embeddings / num_hashes) * embedding_dim * num_hashes` parameters (same total with better distribution)
 
 **Usage Example:**
+
 ```python
-from wave_transformer.language_modelling.embeddings import HashEmbedding
+from wave_transformer.core.embeddings import HashEmbedding
 
 vocab_size = 50000
 embed_dim = 256
@@ -183,8 +186,9 @@ embeddings = hash_embed(input_ids)  # (32, 128, 256)
 - **Output:** torch.Tensor of shape `(batch_size, seq_len, output_dim)`
 
 **Usage Example:**
+
 ```python
-from wave_transformer.language_modelling.embeddings import CharCNNEmbedding
+from wave_transformer.core.embeddings import CharCNNEmbedding
 
 char_vocab_size = 256  # ASCII characters
 char_cnn = CharCNNEmbedding(
@@ -232,8 +236,9 @@ word_embeddings = char_cnn(char_ids)  # (32, 50, 224) where 224 = 32+64+128
 - **Output:** torch.Tensor of shape `(batch_size, seq_len, embedding_dim)`
 
 **Usage Example:**
+
 ```python
-from wave_transformer.language_modelling.embeddings import SubwordEmbedding
+from wave_transformer.core.embeddings import SubwordEmbedding
 
 subword_embed = SubwordEmbedding(vocab_size=30000, embedding_dim=256, max_subwords=4)
 
@@ -278,8 +283,9 @@ token_embeddings = subword_embed(subword_ids, subword_mask)  # (32, 128, 256)
 - **Output:** torch.Tensor of shape `(batch_size, seq_len, word_embed_dim)`
 
 **Usage Example:**
+
 ```python
-from wave_transformer.language_modelling.embeddings import HybridEmbedding
+from wave_transformer.core.embeddings import HybridEmbedding
 
 hybrid = HybridEmbedding(
     word_vocab_size=50000,

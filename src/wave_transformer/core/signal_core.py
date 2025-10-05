@@ -3,7 +3,7 @@ from typing import List, Union, Optional, Dict, Callable, Any
 
 import torch
 
-from wave_transformer.core.normalization import NormalizationSpec, identity_norm
+from .normalization import NormalizationSpec, identity_norm
 
 
 @dataclasses.dataclass

@@ -455,13 +455,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
-        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
+        with open("corpus.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts * 50
+        train_corpus = texts
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)

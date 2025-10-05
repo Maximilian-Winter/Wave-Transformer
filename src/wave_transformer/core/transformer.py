@@ -234,7 +234,7 @@ class WaveTransformer(nn.Module):
         self.layers = nn.ModuleList([
             ParallelBlock(d_model=self.input_dim, n_heads=transformer_num_heads,
                           n_heads_kv=transformer_heads_kv, d_ff=self.input_dim * transformer_d_ff_multi,
-                          dropout=dropout, use_yarn=True,use_flash=use_flash)
+                          dropout=dropout, use_flash=use_flash)
             for _ in range(transformer_num_layers)
         ])
         self.norm_f = RMSNorm(self.input_dim)

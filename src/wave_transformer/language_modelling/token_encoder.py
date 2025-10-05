@@ -53,11 +53,11 @@ class TokenToWaveEncoder(nn.Module):
 
 
         self.freq_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
-                                               dropout, num_harmonics, num_layers, use_flash)
+                                               dropout, num_harmonics, num_layers, max_seq_len, use_flash)
         self.amp_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
-                                              dropout, num_harmonics, num_layers, use_flash)
+                                              dropout, num_harmonics, num_layers, max_seq_len, use_flash)
         self.phase_generator = WaveEncoderBlock(d_model, 8, 8, d_ff,
-                                                dropout, num_harmonics, num_layers, use_flash)
+                                                dropout, num_harmonics, num_layers, max_seq_len, use_flash)
 
     def forward(self, token_ids: torch.Tensor, attention_mask=None):
         x = self.embedding(token_ids) * self.scale

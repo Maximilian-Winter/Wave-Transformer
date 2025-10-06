@@ -12,7 +12,15 @@ from typing import Optional
 import torch.nn as nn
 import torch.nn.functional as F
 
+from memory.aaaaaaaaaa import TaijiMechanismAttention
+from memory.aaaaaaaaaaaaaa import FastNeuralAttention
+from memory.atrrr import BiologicalAttention
+from memory.morton_attn import JiAttention
+from memory.neurological import NeurologicalAttention
+from memory.nuro import HierarchicalAttention
 from .embeddings import RotaryPositionEmbedding
+from .neuro import NeurologicalTransformerBlock
+from .nuro2 import StabilizedHierarchicalAttention
 from .yarn import YaRNRotaryEmbedding
 
 
@@ -231,30 +239,44 @@ class TransformerParallelBlock(nn.Module):
         super().__init__()
 
         self.norm = RMSNorm(d_model)
-        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=num_heads_q, n_heads_kv=num_heads_kv, dropout_p=dropout, max_seq_len=max_seq_len, use_yarn=use_yarn, use_flash=use_flash)
+        self.attn = FastNeuralAttention(d_model, num_heads=num_heads_q)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, causal=True, attention_mask=None):
         # Single normalization, then parallel paths
         normalized = self.norm(x)
-        attn_out = self.attn(normalized, causal, attention_mask)
+        attn_out = self.attn(normalized, attention_mask)
         ffn_out = self.ffn(normalized)
 
         # Combine and add residual
         return x + self.dropout(attn_out + ffn_out)
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
 
 class ModernTransformer(nn.Module):
     def __init__(self, vocab_size, d_model, num_layers, n_heads_q, n_heads_k, d_ff, dropout=0.0, max_seq_len=512,
-                 use_flash=True, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+                 use_flash=True):
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.scale = math.sqrt(d_model)
+        self.positional_encoding = PositionalEncoding(d_model, max_seq_len)
         self.layers = nn.ModuleList([
             TransformerParallelBlock(d_model=d_model, num_heads_q=n_heads_q,
-                          num_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
-                          dropout=dropout, use_yarn=True, use_flash=use_flash)
+                                     num_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
+                                     dropout=dropout, use_yarn=True, use_flash=use_flash)
             for _ in range(num_layers)
         ])
         self.out_proj = nn.Linear(d_model, vocab_size)
@@ -263,10 +285,10 @@ class ModernTransformer(nn.Module):
 
     def forward(self, x, causal=True, attention_mask=None):
         x = self.embedding(x) * self.scale
-
+        x = self.positional_encoding(x)
 
         for layer, norm in zip(self.layers, self.layer_norms):
-            x_out = layer(x, causal=causal, attention_mask=attention_mask)
+            x_out = layer(x, attention_mask=attention_mask)
             x = x + self.dropout(x_out)
             x = norm(x)
 

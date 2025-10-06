@@ -13,6 +13,8 @@ import torch.multiprocessing as mp
 from tokenizers import processors, Tokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from matplotlib import pyplot as plt
+
+from memory.cyclic import CyclicTransformerLM
 from wave_transformer.language_modelling.text_datasets import TextDatasetPaddedSimple
 
 import wandb
@@ -34,7 +36,7 @@ from wave_transformer.language_modelling.train_utils import (
     extract_architecture_details,
     test_generation,
     diversity_report,
-    save_training_chronicle
+    save_training_chronicle, get_logits_tensor
 )
 
 
@@ -147,6 +149,7 @@ def train_epoch(result_dir, epoch, model, dataloader, optimizer, scheduler, pad_
         # Forward pass with error handling
         with torch.autocast("cuda", dtype=torch.bfloat16):
             logits = model(inputs, attention_mask=input_mask)
+            logits = get_logits_tensor(logits)
             loss = compute_language_modeling_loss(logits, targets, pad_token_id)
 
         if not torch.isfinite(loss):
@@ -367,7 +370,7 @@ def train_language_model_distributed(rank, world_size):
         print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 1024
+    seq_len = 256
     d_model = 512
     num_layers = 12
     num_heads = 8
@@ -505,7 +508,7 @@ def train_language_model_distributed(rank, world_size):
         print("Creating model...")
     dtype = torch.float32
 
-    wave_transformer_model = ModernTransformer(vocab_size=vocab_size, d_model=d_model, num_layers=num_layers, n_heads_q=num_heads, n_heads_k=num_heads, d_ff=d_model * 4, max_seq_len=seq_len).to(device, dtype=dtype)
+    wave_transformer_model = ModernTransformer(vocab_size=vocab_size, d_model=d_model, num_layers=num_layers, n_heads_q=num_heads, n_heads_k=num_heads, d_ff=d_model * 4, dropout=dropout, max_seq_len=seq_len).to(device)
 
     # Wrap model with DDP if using multiple GPUs
     if use_ddp:

@@ -64,7 +64,7 @@ def generate_text(model, tokenizer, prompt, device, max_tokens=100,
     for _ in range(max_tokens):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if not isinstance(model, WaveTransformer):
-                logits = model(generated, attention_mask=attn)
+                logits = model(generated, mask=attn)
             else:
                 logits = model({"token_ids": generated}, attention_mask=attn)
             logits = get_logits_tensor(logits)

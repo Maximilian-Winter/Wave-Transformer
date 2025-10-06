@@ -15,17 +15,21 @@ activations = {
     'ELU': nn.ELU(),
     'Softplus': nn.Softplus(),
     'GELU': nn.GELU(),
-    'SiLU (Swish)': nn.SiLU()
+    'SiLU (Swish)': nn.SiLU(),
+    'SELU': nn.SELU(),
+    'CELU': nn.CELU(),
+    'PReLU': nn.PReLU(),
+    'LogSigmoid': nn.LogSigmoid(),
 }
 
 # Create subplots
-fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+fig, axes = plt.subplots(3, 4, figsize=(16, 12))
 axes = axes.flatten()
 
 # Plot each activation function
 for idx, (name, activation) in enumerate(activations.items()):
     y = activation(x)
-    axes[idx].plot(x.numpy(), y.numpy(), linewidth=2)
+    axes[idx].plot(x.numpy(), y.detach().numpy(), linewidth=2)
     axes[idx].set_title(name, fontsize=12, fontweight='bold')
     axes[idx].grid(True, alpha=0.3)
     axes[idx].axhline(y=0, color='k', linewidth=0.5)

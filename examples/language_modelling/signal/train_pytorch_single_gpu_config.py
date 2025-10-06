@@ -169,15 +169,15 @@ def train_language_model():
     print(f"Using device: {device}")
 
     # Model Parameters
-    seq_len = 256
+    seq_len = 1024
     d_model = 512
-    num_layers = 32
+    num_layers = 16
     num_heads = 8
     dropout = 0.1
 
     # Hyperparameters
     epochs = 5
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 4 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -237,12 +237,12 @@ def train_language_model():
     vocab_size = train_tokenizer.get_vocab_size()
 
     def load_dao_teachings():
-        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
+        with open("corpus.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
-        train_corpus = texts * 50
+        train_corpus = texts * 1
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -272,19 +272,19 @@ def train_language_model():
     dtype = torch.bfloat16
     signal_configs = [
         SignalConfig(
-            signal_name="macro",
+            signal_name="frequency",
             torch_activation_function=torch.sigmoid,
             normalization=linear_norm(scale=20.0, offset=0.1),
-            num_dimensions=128
+            num_dimensions=32
         ),
         SignalConfig(
-            signal_name="micro",
+            signal_name="amplitude",
             torch_activation_function=torch.nn.functional.softplus,
             normalization=linear_norm(scale=1.0, offset=0.0),
-            num_dimensions=64
+            num_dimensions=32
         ),
         SignalConfig(
-            signal_name="nano",
+            signal_name="phase",
             torch_activation_function=torch.tanh,
             normalization=linear_norm(scale=np.pi, offset=0.0),
             num_dimensions=32
@@ -296,15 +296,14 @@ def train_language_model():
         signals=signal_configs,
         encoder_d_model=d_model,
         decoder_d_model=d_model,
-        encoder_num_layers=4,
-        decoder_num_layers=4,
         transformer_num_layers=num_layers,
         transformer_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads,
                                                                 max_seq_len=seq_len, d_ff=input_dim * 4),
+        # 3 Signals with each 32 dimensions
         encoder_layer_config=TransformerParallelBlockConfig(num_heads_q=num_heads, num_heads_kv=num_heads,
                                                             max_seq_len=seq_len),
         max_seq_len=seq_len,
-        share_encoder_layer=True,
+        share_encoder_layer=True
     ).to(device)
 
     print("Model:\n", signal_transformer_model)

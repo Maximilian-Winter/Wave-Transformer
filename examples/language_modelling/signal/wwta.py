@@ -34,7 +34,7 @@ for idx, (name, activation) in enumerate(activations.items()):
     axes[idx].set_ylabel('Output')
 
 plt.tight_layout()
-plt.savefig('/mnt/user-data/outputs/activation_functions.png', dpi=300, bbox_inches='tight')
+plt.savefig('activation_functions.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 print("Visualization saved to activation_functions.png")

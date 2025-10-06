@@ -7,9 +7,46 @@ from typing import Union, Any
 
 import torch
 import torch.nn as nn
+from matplotlib import pyplot as plt
 
 from .signal_core import SignalConfig, MultiSignal
 from .transformer import TransformerParallelBlock, TransformerParallelBlockConfig, MultiQueryFlashAttention, RMSNorm
+import torch.nn.functional as F
+
+
+class LearnableActivation(nn.Module):
+    """Most expressive variant - learns both the curve AND the blend dynamically"""
+
+    def __init__(self, hidden_dim=16, num_layers=2):
+        super().__init__()
+
+        # Build deeper transformation if needed
+        layers = []
+        in_dim = 1
+        for _ in range(num_layers):
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.Tanh()  # or make this learnable too
+            ])
+            in_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dim, 1))
+
+        self.mlp = nn.Sequential(*layers)
+        self.alpha = nn.Parameter(torch.tensor(0.1))
+
+        # Smart initialization
+        for m in self.mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x_flat = x.view(-1, 1)
+        learned = self.mlp(x_flat)
+        out = torch.sigmoid(self.alpha) * learned + (1 - torch.sigmoid(self.alpha)) * x_flat
+        return out.view(shape)
+
 
 
 class Encoder(nn.Module):
@@ -48,11 +85,13 @@ class SignalEncoder(nn.Module):
         self.signal_configs = output_signals
         self.output_signals = output_signals
 
+
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.signal_output_encoders = nn.ModuleDict({})
         if share_encoder_layers:
             self.shared_encoder = Encoder(d_model, num_layers, layer_config)
 
+        self.signal_activations = nn.ModuleDict({})
         for output_signal in self.signal_configs:
             if share_encoder_layers:
                 self.signal_output_encoders[output_signal.signal_name] = nn.Linear(d_model,
@@ -60,7 +99,7 @@ class SignalEncoder(nn.Module):
             else:
                 self.signal_output_encoders[output_signal.signal_name] = Encoder(d_model, num_layers, layer_config,
                                                                                  output_signal.num_dimensions)
-
+            self.signal_activations[output_signal.signal_name] = LearnableActivation(32, 12)
     def forward(self, token_ids: torch.Tensor, causal=True, attention_mask=None):
         x = self.embedding(token_ids) * self.scale
 
@@ -74,7 +113,8 @@ class SignalEncoder(nn.Module):
             else:
                 x_out = self.signal_output_encoders[output_signal.signal_name](x, causal=causal,
                                                                            attention_mask=attention_mask)
-            x_out = output_signal.normalization.apply(x_out)
+            x_out = self.signal_activations[output_signal.signal_name](x_out)
+            #x_out = output_signal.normalization.apply(x_out)
             signal_list.append(x_out)
 
         return MultiSignal.from_signals(signal_list)

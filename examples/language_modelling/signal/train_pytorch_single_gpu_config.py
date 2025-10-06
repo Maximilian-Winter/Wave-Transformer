@@ -177,7 +177,7 @@ def train_language_model():
 
     # Hyperparameters
     epochs = 5
-    batch_size = 16 if torch.cuda.is_available() else 4
+    batch_size = 4 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 1
     base_lr = 3e-4
@@ -272,19 +272,19 @@ def train_language_model():
     dtype = torch.bfloat16
     signal_configs = [
         SignalConfig(
-            signal_name="global",
+            signal_name="macro",
             torch_activation_function=torch.sigmoid,
             normalization=linear_norm(scale=20.0, offset=0.1),
             num_dimensions=128
         ),
         SignalConfig(
-            signal_name="amplitude",
+            signal_name="micro",
             torch_activation_function=torch.nn.functional.softplus,
             normalization=linear_norm(scale=1.0, offset=0.0),
             num_dimensions=64
         ),
         SignalConfig(
-            signal_name="phase",
+            signal_name="nano",
             torch_activation_function=torch.tanh,
             normalization=linear_norm(scale=np.pi, offset=0.0),
             num_dimensions=32

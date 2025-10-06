@@ -51,15 +51,9 @@ class _Stats:
         self.produced = 0
         self.consumed = 0
         self.refills = 0
-        # packing stats
-        self.packed_sequences = 0
-        self.total_sequences = 0
-        self.total_tokens_used = 0
-        self.total_tokens_capacity = 0
         # time buckets
         self.time_fetch = 0.0
         self.time_tokenize = 0.0
-        self.time_pack = 0.0
         self.time_put_block = 0.0
         self.time_get_block = 0.0
         # queue size (updated by prod/cons)
@@ -99,10 +93,6 @@ class _Stats:
         with self.lock:
             self.time_tokenize += dt
 
-    def add_pack_time(self, dt: float):
-        with self.lock:
-            self.time_pack += dt
-
     def add_put_block_time(self, dt: float):
         if dt <= 0:
             return
@@ -119,14 +109,6 @@ class _Stats:
         with self.lock:
             self.refills += 1
 
-    def record_packing(self, num_sequences: int, tokens_used: int, tokens_capacity: int):
-        with self.lock:
-            self.total_sequences += num_sequences
-            if num_sequences > 1:
-                self.packed_sequences += 1
-            self.total_tokens_used += tokens_used
-            self.total_tokens_capacity += tokens_capacity
-
     def snapshot(self):
         with self.lock:
             now = time.time()
@@ -137,9 +119,6 @@ class _Stats:
             prod_sps = prod_rate / max(prod_span, 1e-6)
             cons_sps = cons_rate / max(cons_span, 1e-6)
             q_pct = (self.qsize / self.qmax * 100.0) if self.qmax else 0.0
-            packing_rate = (self.packed_sequences / self.total_sequences * 100.0) if self.total_sequences else 0.0
-            token_efficiency = (
-                        self.total_tokens_used / self.total_tokens_capacity * 100.0) if self.total_tokens_capacity else 0.0
             return {
                 "uptime_s": now - self.start_time,
                 "produced": self.produced,
@@ -150,13 +129,8 @@ class _Stats:
                 "queue_size": self.qsize,
                 "queue_capacity": self.qmax,
                 "queue_fill_pct": q_pct,
-                "packing_rate_pct": packing_rate,
-                "token_efficiency_pct": token_efficiency,
-                "packed_sequences": self.packed_sequences,
-                "total_sequences": self.total_sequences,
                 "time_fetch_s": self.time_fetch,
                 "time_tokenize_s": self.time_tokenize,
-                "time_pack_s": self.time_pack,
                 "time_put_block_s": self.time_put_block,
                 "time_get_block_s": self.time_get_block,
             }
@@ -164,11 +138,11 @@ class _Stats:
 
 class MultiBoundedStreamingDataset(IterableDataset):
     """
-    Streaming + batch tokenization + background prefetch with DEBUG STATS and SEQUENCE PACKING.
+    Streaming + batch tokenization + background prefetch with DEBUG STATS and optional sequence packing.
 
     - Produces CPU tensors (recommended). Move to CUDA in the train loop with non_blocking=True.
     - Debug: set debug=True to log every `log_interval_s` seconds, or pass a `stats_callback(dict)`.
-    - Packing: set use_packing=True to combine multiple sequences when >packing_threshold space remains.
+    - Packing: set pack_sequences=True to pack multiple entries into sequences (stops when >95% full)
     """
 
     SENTINEL = ("__END_OF_STREAM__", None)
@@ -180,16 +154,19 @@ class MultiBoundedStreamingDataset(IterableDataset):
             pad_token_id: int,
             sequence_length: int = 512,
             batch_size: int = 32,
-            prefetch_batches: int = 128,
-            prefetch_chunk_batches: int = 16,
+            prefetch_batches: int = 128,  # steady queue depth in batches
+            prefetch_chunk_batches: int = 16,  # work granularity for producer
             tokenizer_batch_size: int = 256,
             weighted_sampling: bool = False,
             global_max_entries: Optional[int] = None,
             seed: Optional[int] = None,
+            # device handling
             move_to_device: bool = False,
             device: Optional[torch.device] = None,
-            use_packing: bool = False,
-            packing_threshold: float = 0.05,
+            # sequence packing
+            pack_sequences: bool = False,
+            pack_threshold: float = 0.95,  # pack until sequence is at least this full
+            # debug knobs
             debug: bool = False,
             log_interval_s: float = 5.0,
             stats_window_s: float = 60.0,
@@ -197,7 +174,8 @@ class MultiBoundedStreamingDataset(IterableDataset):
     ):
         super().__init__()
         assert prefetch_batches >= 1 and prefetch_chunk_batches >= 1
-        assert 0.0 <= packing_threshold <= 1.0
+        assert 0.0 < pack_threshold <= 1.0, "pack_threshold must be between 0 and 1"
+
         self.dataset_specs_template = dataset_specs
         self.tokenizer = tokenizer
         self.pad_token_id = pad_token_id
@@ -211,8 +189,8 @@ class MultiBoundedStreamingDataset(IterableDataset):
         self.seed = seed
         self.move_to_device = move_to_device
         self.device = device
-        self.use_packing = use_packing
-        self.packing_threshold = packing_threshold
+        self.pack_sequences = pack_sequences
+        self.pack_threshold = pack_threshold
         self.debug = debug
         self.log_interval_s = log_interval_s
         self.stats_callback = stats_callback
@@ -220,15 +198,21 @@ class MultiBoundedStreamingDataset(IterableDataset):
         # stats
         self.stats = _Stats(win_seconds=stats_window_s)
 
-        # tokenizer setup - when packing, don't enable padding/truncation here
-        # (we'll handle it manually in the packing logic)
-        if not use_packing:
+        # tokenizer setup
+        if pack_sequences:
+            # When packing, disable padding - we'll handle it ourselves
+            self.tokenizer.no_padding()
+            self.tokenizer.enable_truncation(max_length=sequence_length)
+        else:
+            # Original behavior: fixed-length padding
             self.tokenizer.enable_padding(
                 pad_id=pad_token_id,
                 pad_token=self.tokenizer.decode([pad_token_id], skip_special_tokens=False),
                 length=sequence_length,
             )
             self.tokenizer.enable_truncation(max_length=sequence_length)
+
+    # --------- helpers ---------
 
     def _clone_specs(self) -> List[BoundedStreamingDataset]:
         return [dataclasses.replace(s, current_idx=0) for s in self.dataset_specs_template]
@@ -240,103 +224,96 @@ class MultiBoundedStreamingDataset(IterableDataset):
                 ds = ds.skip(spec.skip_first)
             spec._stream = iter(ds)
 
+    def _pack_sequences(self, encodings: List) -> List[Dict[str, torch.Tensor]]:
+        """Pack multiple tokenized entries into sequences until threshold is reached."""
+        packed = []
+        current_ids = []
+        current_length = 0
+        min_length = int(self.sequence_length * self.pack_threshold)
+
+        for enc in encodings:
+            ids = enc.ids
+            entry_length = len(ids)
+
+            # If this entry alone exceeds sequence length, truncate and yield
+            if entry_length >= self.sequence_length:
+                packed_ids = ids[:self.sequence_length]
+                packed_mask = [True] * len(packed_ids)
+
+                ids_tensor = torch.tensor(packed_ids, dtype=torch.long)
+                mask_tensor = torch.tensor(packed_mask, dtype=torch.bool)
+
+                if self.move_to_device and self.device is not None:
+                    ids_tensor = ids_tensor.to(self.device, non_blocking=True)
+                    mask_tensor = mask_tensor.to(self.device, non_blocking=True)
+
+                packed.append({"input_ids": ids_tensor, "attention_mask": mask_tensor})
+                continue
+
+            # Check if adding this entry would exceed sequence length
+            if current_length + entry_length > self.sequence_length:
+                # Yield current packed sequence if it meets threshold
+                if current_length >= min_length:
+                    # Pad to sequence_length
+                    padding_needed = self.sequence_length - current_length
+                    current_ids.extend([self.pad_token_id] * padding_needed)
+                    current_mask = [True] * current_length + [False] * padding_needed
+
+                    ids_tensor = torch.tensor(current_ids, dtype=torch.long)
+                    mask_tensor = torch.tensor(current_mask, dtype=torch.bool)
+
+                    if self.move_to_device and self.device is not None:
+                        ids_tensor = ids_tensor.to(self.device, non_blocking=True)
+                        mask_tensor = mask_tensor.to(self.device, non_blocking=True)
+
+                    packed.append({"input_ids": ids_tensor, "attention_mask": mask_tensor})
+
+                # Start new sequence with current entry
+                current_ids = list(ids)
+                current_length = entry_length
+            else:
+                # Add to current sequence
+                current_ids.extend(ids)
+                current_length += entry_length
+
+        # Handle remaining sequence
+        if current_ids:
+            padding_needed = self.sequence_length - current_length
+            current_ids.extend([self.pad_token_id] * padding_needed)
+            current_mask = [True] * current_length + [False] * padding_needed
+
+            ids_tensor = torch.tensor(current_ids, dtype=torch.long)
+            mask_tensor = torch.tensor(current_mask, dtype=torch.bool)
+
+            if self.move_to_device and self.device is not None:
+                ids_tensor = ids_tensor.to(self.device, non_blocking=True)
+                mask_tensor = mask_tensor.to(self.device, non_blocking=True)
+
+            packed.append({"input_ids": ids_tensor, "attention_mask": mask_tensor})
+
+        return packed
+
     def _texts_to_tensors(self, texts: List[str]) -> List[Dict[str, torch.Tensor]]:
         if not texts:
             return []
+
         with _Timer() as t_tok:
             encs = self.tokenizer.encode_batch(texts, add_special_tokens=False)
         self.stats.add_tokenize_time(t_tok.dt)
 
-        out = []
-        for e in encs:
-            ids = torch.tensor(e.ids, dtype=torch.long)
-            mask = torch.tensor(e.attention_mask, dtype=torch.bool)
-            if self.move_to_device and self.device is not None:
-                ids = ids.to(self.device, non_blocking=True)
-                mask = mask.to(self.device, non_blocking=True)
-            out.append({"input_ids": ids, "attention_mask": mask})
-        return out
-
-    def _pack_sequences(self, tokenized: List[Dict[str, torch.Tensor]]) -> List[Dict[str, torch.Tensor]]:
-        """Pack multiple sequences together when space permits."""
-        if not self.use_packing or not tokenized:
-            return tokenized
-
-        with _Timer() as t_pack:
-            packed = []
-            current_ids = []
-            current_mask = []
-
-            for item in tokenized:
-                ids = item["input_ids"]
-                mask = item["attention_mask"]
-
-                # Calculate current and new lengths
-                current_len = len(current_ids)
-                new_len = len(ids)
-                combined_len = current_len + new_len
-
-                # Check if we should start a new packed sequence
-                if current_len == 0:
-                    # First sequence in pack
-                    current_ids = ids.tolist()
-                    current_mask = mask.tolist()
-                elif combined_len <= self.sequence_length:
-                    # Can add to current pack
-                    remaining_space = self.sequence_length - current_len
-                    threshold_space = int(self.sequence_length * self.packing_threshold)
-
-                    if remaining_space >= threshold_space:
-                        # Enough space remaining, add this sequence
-                        current_ids.extend(ids.tolist())
-                        current_mask.extend(mask.tolist())
-                    else:
-                        # Not enough space, finalize current and start new
-                        self._finalize_packed_sequence(current_ids, current_mask, packed)
-                        current_ids = ids.tolist()
-                        current_mask = mask.tolist()
-                else:
-                    # Would exceed max length, finalize current and start new
-                    self._finalize_packed_sequence(current_ids, current_mask, packed)
-                    current_ids = ids.tolist()
-                    current_mask = mask.tolist()
-
-            # Finalize last sequence
-            if current_ids:
-                self._finalize_packed_sequence(current_ids, current_mask, packed)
-
-        self.stats.add_pack_time(t_pack.dt)
-        return packed
-
-    def _finalize_packed_sequence(self, ids: List[int], mask: List[bool],
-                                  output: List[Dict[str, torch.Tensor]]):
-        """Pad and convert a packed sequence to tensor."""
-        current_len = len(ids)
-
-        # Record packing stats
-        num_sequences = sum(1 for i in range(len(ids) - 1) if ids[i] != self.pad_token_id and
-                            (i == 0 or ids[i - 1] == self.pad_token_id))
-        self.stats.record_packing(num_sequences, current_len, self.sequence_length)
-
-        # Pad to sequence_length
-        if current_len < self.sequence_length:
-            padding_len = self.sequence_length - current_len
-            ids.extend([self.pad_token_id] * padding_len)
-            mask.extend([False] * padding_len)
-        elif current_len > self.sequence_length:
-            # Truncate if somehow exceeded
-            ids = ids[:self.sequence_length]
-            mask = mask[:self.sequence_length]
-
-        # Convert to tensors
-        ids_tensor = torch.tensor(ids, dtype=torch.long)
-        mask_tensor = torch.tensor(mask, dtype=torch.bool)
-
-        if self.move_to_device and self.device is not None:
-            ids_tensor = ids_tensor.to(self.device, non_blocking=True)
-            mask_tensor = mask_tensor.to(self.device, non_blocking=True)
-
-        output.append({"input_ids": ids_tensor, "attention_mask": mask_tensor})
+        if self.pack_sequences:
+            return self._pack_sequences(encs)
+        else:
+            # Original behavior: one-to-one mapping
+            out = []
+            for e in encs:
+                ids = torch.tensor(e.ids, dtype=torch.long)
+                mask = torch.tensor(e.attention_mask, dtype=torch.bool)
+                if self.move_to_device and self.device is not None:
+                    ids = ids.to(self.device, non_blocking=True)
+                    mask = mask.to(self.device, non_blocking=True)
+                out.append({"input_ids": ids, "attention_mask": mask})
+            return out
 
     def _fetch_tokenized_chunk(self, spec: BoundedStreamingDataset, samples_to_fetch: int) -> List[
         Dict[str, torch.Tensor]]:
@@ -360,12 +337,9 @@ class MultiBoundedStreamingDataset(IterableDataset):
             if buf:
                 tokenized.extend(self._texts_to_tensors(buf))
         self.stats.add_fetch_time(t_fetch.dt)
-
-        # Apply packing if enabled
-        if self.use_packing:
-            tokenized = self._pack_sequences(tokenized)
-
         return tokenized
+
+    # --------- producers ---------
 
     def _producer_base(self, q, specs, stop_event, weighted: bool):
         fetch_size = self.batch_size * self.prefetch_chunk_batches
@@ -414,7 +388,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     # enqueue
                     for s in toks:
                         t0 = time.perf_counter()
-                        q.put(("ok", s))
+                        q.put(("ok", s))  # blocks when queue is full
                         self.stats.add_put_block_time(time.perf_counter() - t0)
                         produced_this_refill += 1
                         global_yielded += 1
@@ -423,12 +397,15 @@ class MultiBoundedStreamingDataset(IterableDataset):
                             q.put(MultiBoundedStreamingDataset.SENTINEL)
                             return
 
-                time.sleep(0)
+                # small cooperative yield
+                time.sleep(0)  # let consumer run
 
             q.put(MultiBoundedStreamingDataset.SENTINEL)
         except Exception as e:
             q.put(("error", {"msg": str(e)}))
             q.put(MultiBoundedStreamingDataset.SENTINEL)
+
+    # --------- iterator & logger ---------
 
     def _logger_loop(self, stop_event: threading.Event):
         next_log = time.time() + self.log_interval_s
@@ -442,17 +419,13 @@ class MultiBoundedStreamingDataset(IterableDataset):
                     except Exception:
                         pass
                 if self.debug:
-                    msg = (f"[DatasetStats] up:{snap['uptime_s']:.1f}s | prod:{snap['producer_sps']:.2f}/s "
-                           f"| cons:{snap['consumer_sps']:.2f}/s | q:{snap['queue_size']}/{snap['queue_capacity']} "
-                           f"({snap['queue_fill_pct']:.0f}%)")
-                    if self.use_packing:
-                        msg += (f" | pack:{snap['packing_rate_pct']:.1f}% | eff:{snap['token_efficiency_pct']:.1f}%")
-                    msg += (f" | fetch:{snap['time_fetch_s']:.1f}s | tok:{snap['time_tokenize_s']:.1f}s")
-                    if self.use_packing:
-                        msg += f" | pack:{snap['time_pack_s']:.1f}s"
-                    msg += (f" | put_blk:{snap['time_put_block_s']:.1f}s | get_blk:{snap['time_get_block_s']:.1f}s "
-                            f"| refills:{snap['refills']}")
-                    print(msg)
+                    print(
+                        (f"[DatasetStats] up:{snap['uptime_s']:.1f}s | prod:{snap['producer_sps']:.2f}/s "
+                         f"| cons:{snap['consumer_sps']:.2f}/s | q:{snap['queue_size']}/{snap['queue_capacity']} "
+                         f"({snap['queue_fill_pct']:.0f}%) | fetch:{snap['time_fetch_s']:.1f}s "
+                         f"| tok:{snap['time_tokenize_s']:.1f}s | put_blk:{snap['time_put_block_s']:.1f}s "
+                         f"| get_blk:{snap['time_get_block_s']:.1f}s | refills:{snap['refills']}")
+                    )
                 next_log = now + self.log_interval_s
             time.sleep(0.05)
 
@@ -494,6 +467,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
         finally:
             prod_stop.set()
             log_stop.set()
+            # let daemon threads wind down
             time.sleep(0.05)
 
     def __len__(self) -> int:
@@ -532,8 +506,8 @@ class MultiBoundedStreamingDataset(IterableDataset):
             "seed": self.seed,
             "move_to_device": self.move_to_device,
             "device": str(self.device) if self.device else None,
-            "use_packing": self.use_packing,
-            "packing_threshold": self.packing_threshold,
+            "pack_sequences": self.pack_sequences,
+            "pack_threshold": self.pack_threshold,
         }
         with open(filepath, 'w') as f:
             json.dump(config, f, indent=2)
@@ -553,6 +527,7 @@ class MultiBoundedStreamingDataset(IterableDataset):
         device_str = config.pop("device", None)
         device = torch.device(device_str) if device_str else None
 
+        # Apply any runtime overrides
         config.update(overrides)
 
         return cls(

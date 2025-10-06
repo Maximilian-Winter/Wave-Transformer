@@ -99,7 +99,7 @@ class SignalEncoder(nn.Module):
             else:
                 self.signal_output_encoders[output_signal.signal_name] = Encoder(d_model, num_layers, layer_config,
                                                                                  output_signal.num_dimensions)
-            self.signal_activations[output_signal.signal_name] = LearnableActivation(32, 12)
+            self.signal_activations[output_signal.signal_name] = LearnableActivation(16, 4)
     def forward(self, token_ids: torch.Tensor, causal=True, attention_mask=None):
         x = self.embedding(token_ids) * self.scale
 

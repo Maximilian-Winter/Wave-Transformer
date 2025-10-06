@@ -196,7 +196,7 @@ class HierarchicalLoss(nn.Module):
         return losses
 
 
-def train_hierarchical_model(
+def train_eval_hierarchical_model(
         model: HierarchicalSignalTransformer,
         train_loader: DataLoader,
         val_loader: DataLoader,
@@ -279,6 +279,68 @@ def train_hierarchical_model(
         }
         torch.save(checkpoint, f"hierarchical_checkpoint_epoch_{epoch + 1}.pt")
 
+def train_hierarchical_model(
+        model: HierarchicalSignalTransformer,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        num_epochs: int = 5,
+        learning_rate: float = 5e-4,
+        device: str = "cuda"
+):
+    """
+    Training loop for hierarchical signal transformer.
+    """
+    model = model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs * len(train_loader)
+    )
+
+    loss_fn = HierarchicalLoss(model.signal_transformer.vocab_size)
+
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_losses = {"total": 0, "main": 0, "diversity": 0}
+
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
+
+        for batch_idx, batch in enumerate(progress_bar):
+            input_ids = batch["input_ids"].to(device)
+
+            # Forward pass with auxiliary outputs
+            outputs = model(input_ids, return_auxiliary=True)
+
+            # Compute losses
+            losses = loss_fn(outputs, input_ids)
+
+            # Backward pass
+            optimizer.zero_grad()
+            losses["total"].backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+
+            # Update metrics
+            for key, value in losses.items():
+                if key in epoch_losses:
+                    epoch_losses[key] += value.item()
+
+            # Update progress bar
+            if batch_idx % 10 == 0:
+                avg_losses = {k: v / (batch_idx + 1) for k, v in epoch_losses.items()}
+                progress_bar.set_postfix(avg_losses)
+
+
+        #print(f"Epoch {epoch + 1} - Val Loss: {avg_val_loss:.4f}, Val Perplexity: {math.exp(avg_val_loss):.2f}")
+
+        # Save checkpoint
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict()
+        }
+        torch.save(checkpoint, f"hierarchical_checkpoint_epoch_{epoch + 1}.pt")
 
 # Visualization function to inspect learned signals
 @torch.no_grad()

@@ -250,8 +250,6 @@ def train_epoch(result_dir, epoch, model, tokenizer, signal_monitor, dataloader,
             })
 
 
-
-
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Dataloader exhausted after {batch_count} batches")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Rank {rank}: Completed {batch_count} batches total")
 
@@ -418,7 +416,7 @@ def train_language_model_distributed(rank, world_size):
         )
         print(f"Signal visualization directory: {signal_viz_dir}")
     # Model Parameters
-    seq_len = 256
+    seq_len = 512
     d_model = 512
     num_layers = 12
     num_heads = 8
@@ -427,7 +425,7 @@ def train_language_model_distributed(rank, world_size):
 
     # Hyperparameters - adjust batch size per GPU
     epochs = 5
-    batch_size = 4 if torch.cuda.is_available() else 4
+    batch_size = 16 if torch.cuda.is_available() else 4
     eval_batch_size = 1
     accumulation_steps = 2
     base_lr = 3e-4
@@ -439,8 +437,8 @@ def train_language_model_distributed(rank, world_size):
     use_wandb = False
     if rank == 0 and use_wandb:
         wandb.init(
-            project="wave-transformer-training",
-            name=f"wave_transformer_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            project="signal-transformer-daoist-mix",
+            name=f"signal-transformer-daoist-mix_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             config={
                 "seq_len": seq_len,
                 "d_model": d_model,
@@ -491,13 +489,13 @@ def train_language_model_distributed(rank, world_size):
     vocab_size = train_tokenizer.get_vocab_size()
  #
     def load_dao_teachings():
-        with open("dao_de_jing.json", "r", encoding="utf-8") as file:
+        with open("corpus.json", "r", encoding="utf-8") as file:
             chapters = json.load(file)
         random.shuffle(chapters)
         random.shuffle(chapters)
         texts = [chapter["text"] for chapter in chapters]
         factor = int(len(texts) * 0.97)
-        train_corpus = texts * 20
+        train_corpus = texts * 2
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
         random.shuffle(train_corpus)
@@ -506,27 +504,12 @@ def train_language_model_distributed(rank, world_size):
         return train_corpus, eval_corpus
 
     train_corpus, eval_corpus = load_dao_teachings()
-    avg_train_length = 0
-    max_train_length = -1
-    min_train_length = 10000
-    entries_per_dataset = len(train_corpus)
-    #cleaned_corpus = []
-    #for train_text in train_corpus:
-    #    train_length = len(tokenizer.encode(train_text).ids)
-    #    if train_length >= 6:
-    #        cleaned_corpus.append(train_text)
-    #        avg_train_length += train_length
-    #        max_train_length = max(max_train_length, train_length)
-    #        min_train_length = min(min_train_length, train_length)
-    #entries_per_dataset = len(cleaned_corpus)
-    #avg_train_length = avg_train_length / len(train_corpus)
-    print(
-        f"Dataset Entries: {entries_per_dataset}, Average length: {avg_train_length}, Max length: {max_train_length}, Min length: {min_train_length}")
+
     train_dataset = TextDatasetPaddedSimple(train_corpus, train_tokenizer, pad_token_id, seq_len)
 
     prompts = [
         "The tao that can be told",
-        "Success is as dangerous as failure."
+        "Success is as dangerous as failure.",
         "The way forward",
         "The tao that can be trodden",
         "Flow like water"
@@ -534,7 +517,7 @@ def train_language_model_distributed(rank, world_size):
     # Use wrapper for distribution
     if use_ddp:
         train_dataset_wrapped = DistributedIterableWrapper(
-            train_dataset, rank, world_size, entries_per_dataset
+            train_dataset, rank, world_size, len(train_corpus)
         )
         train_loader = DataLoader(
             train_dataset_wrapped,
@@ -620,8 +603,8 @@ def train_language_model_distributed(rank, world_size):
     )
 
     # Create scheduler
-    entries_per_rank = entries_per_dataset // world_size
-    steps_per_epoch = entries_per_rank // (batch_size * accumulation_steps)
+    entries_per_rank = len(train_loader) // world_size
+    steps_per_epoch =  entries_per_rank // accumulation_steps
     total_steps = epochs * steps_per_epoch
     warmup_steps = max(1, int(warmup_pct * total_steps))
 

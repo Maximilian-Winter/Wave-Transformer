@@ -482,8 +482,8 @@ def train_language_model_distributed(rank, world_size):
         move_to_device=False,
         device=None,
         # NEW: Enable sequence packing
-        use_packing=True,
-        packing_threshold=0.05,  # Pack when >5% space left
+        pack_sequences=True,
+        pack_threshold=0.05,  # Pack when >5% space left
         debug=True,  # Enable to see packing stats
         log_interval_s=5.0,
         stats_window_s=60.0,

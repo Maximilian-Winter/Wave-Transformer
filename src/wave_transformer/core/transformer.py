@@ -238,15 +238,15 @@ class TransformerParallelBlock(nn.Module):
     def __init__(self, d_model, num_heads_q, num_heads_kv, d_ff, max_seq_len=256, dropout=0.0, use_yarn=True, use_flash=True):
         super().__init__()
 
-        self.norm = RMSNorm(d_model)
-        self.attn = FastNeuralAttention(d_model, num_heads=num_heads_q)
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = MultiQueryFlashAttention(d_model, n_heads_q=num_heads_q, n_heads_kv=num_heads_kv, dropout_p=dropout, use_yarn=use_yarn, max_seq_len=max_seq_len, use_flash=use_flash)
         self.ffn = SwiGLU(d_model, d_ff, dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, causal=True, attention_mask=None):
         # Single normalization, then parallel paths
         normalized = self.norm(x)
-        attn_out = self.attn(normalized, attention_mask)
+        attn_out = self.attn(normalized, causal, attention_mask)
         ffn_out = self.ffn(normalized)
 
         # Combine and add residual
@@ -272,7 +272,6 @@ class ModernTransformer(nn.Module):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.scale = math.sqrt(d_model)
-        self.positional_encoding = PositionalEncoding(d_model, max_seq_len)
         self.layers = nn.ModuleList([
             TransformerParallelBlock(d_model=d_model, num_heads_q=n_heads_q,
                                      num_heads_kv=n_heads_k, d_ff=d_ff, max_seq_len=max_seq_len,
@@ -285,7 +284,6 @@ class ModernTransformer(nn.Module):
 
     def forward(self, x, causal=True, attention_mask=None):
         x = self.embedding(x) * self.scale
-        x = self.positional_encoding(x)
 
         for layer, norm in zip(self.layers, self.layer_norms):
             x_out = layer(x, attention_mask=attention_mask)

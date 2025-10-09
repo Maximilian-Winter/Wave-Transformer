@@ -10,7 +10,7 @@ from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.generation import GenerationMixin
 
-from wave_transformer.core.transformer import ParallelBlock, RMSNorm
+from wave_transformer.core.transformer import TransformerParallelBlock, RMSNorm
 from wave_transformer.language_modelling.token_encoder import TokenToWaveEncoderSlim
 from wave_transformer.language_modelling.token_decoder import WaveToTokenDecoder
 
@@ -38,6 +38,7 @@ class WaveTransformerConfig(PretrainedConfig):
             decoder_num_layers=2,
             decoder_low_rank_output=None,
             use_flash=False,
+            shared_projection=False,
             pad_token_id=0,
             bos_token_id=1,
             eos_token_id=2,
@@ -72,6 +73,7 @@ class WaveTransformerConfig(PretrainedConfig):
         self.decoder_num_layers = decoder_num_layers
         self.decoder_low_rank_output = decoder_low_rank_output
         self.use_flash = use_flash
+        self.shared_projection = shared_projection
 
 
 class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
@@ -97,7 +99,7 @@ class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
             config.encoder_num_heads,
             config.encoder_num_heads,
             config.encoder_num_layers,
-            False
+            self.shared_projection
         )
         # self.wave_encoder = TokenToWaveEncoder(
         #    config.vocab_size,
@@ -111,7 +113,7 @@ class WaveTransformerForCausalLM(PreTrainedModel, GenerationMixin):
         # Transformer layers
         input_dim = config.num_harmonics * 3
         self.layers = nn.ModuleList([
-            ParallelBlock(
+            TransformerParallelBlock(
                 input_dim,
                 config.num_heads,
                 config.num_heads,

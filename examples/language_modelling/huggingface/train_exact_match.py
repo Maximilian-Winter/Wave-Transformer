@@ -16,7 +16,7 @@ def main():
     with open("dao_de_jing.json", "r", encoding="utf-8") as file:
         chapters = json.load(file)
 
-    texts = chapters * 50
+    texts = chapters * 5
 
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
@@ -25,7 +25,7 @@ def main():
     # Model configuration
     config = WaveTransformerConfig(
         vocab_size=tokenizer.vocab_size,
-        num_layers=48,
+        num_layers=24,
         num_heads=8,
         num_harmonics=64,
         max_seq_len=512,
